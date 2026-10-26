@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Watch",
-    "description": "Event-driven watchers that wake the agent only when a check reports an event."
+    "description": "SQLite-backed watch scheduler: runs checkers on a poll interval and wakes the bound session only when a checker reports a notify event."
   }
 }

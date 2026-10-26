@@ -1,17 +1,15 @@
 {
   "name": "dsh-watch-kit-plugin",
-  "version": "0.1.0",
-  "description": "Event-driven watch plugin for DeepSeek Harness. Runs user/agent-authored checks on an interval and wakes the bound session only when a check reports an event.",
+  "version": "0.2.1",
+  "description": "Minimal SQLite-backed watch scheduler for DeepSeek Harness: polls checkers and wakes the bound session only when a checker returns a notify event.",
   "keywords": [
     "dsh",
     "deepseek-harness",
     "cordis",
-    "cordis-plugin",
     "watch",
     "watcher",
     "polling",
-    "event-driven",
-    "agent-automation"
+    "sqlite"
   ],
   "license": "MIT",
   "author": "rokyaria",
@@ -28,33 +26,36 @@
   "exports": {
     ".": "./lib/index.js",
     "./locale/*.json": "./locale/*.json",
-    "./icon": "./icon.svg"
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
   },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
   },
-  "dependencies": {
+  "engines": {
+    "node": ">=24.0.0",
+    "dsh": "^0.2.1-rc.3"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-llm": "^0.2.1-rc.3",
+    "@deepseek-ai/dsh-tools": "^0.2.1-rc.3",
+    "@deepseek-ai/schemastery": "^3.18.5"
+  },
+  "devDependencies": {
     "@deepseek-ai/dsh-llm": "0.2.1-rc.3",
     "@deepseek-ai/dsh-tools": "0.2.1-rc.3",
     "@deepseek-ai/schemastery": "~3.18.4"
   },
   "files": [
     "lib",
-    "skills",
-    "assets",
-    "examples",
-    "test",
     "locale",
     "icon.svg",
     "cordis.patch.yml",
-    "README.md",
-    "docs"
+    "CHANGELOG.md",
+    "README.md"
   ],
-  "engines": {
-    "node": ">=22.19.0"
-  },
   "scripts": {
     "test": "node --test test/*.test.mjs"
   }

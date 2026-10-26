@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Watch",
-    "description": "事件驱动的常驻巡检：只在检测到变化时唤醒会话。"
+    "description": "基于 SQLite 的常驻巡检：按轮询间隔执行 checker，只在 checker 返回事件时唤醒绑定会话。"
   }
 }

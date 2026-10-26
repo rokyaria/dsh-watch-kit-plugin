@@ -1,17 +1,17 @@
 # dsh-watch-kit-plugin —— profile bundle layer
 #
-# 安装后插件行默认没有 watch 目录（specDirs 为空，插件只在日志里提示一次）。
-# 在 profile 的 cordis.patch.yml 里覆盖本行，填入 specDirs：
+# 安装后默认：10s 轮询，配置文件 <workspace>/.dsh/watch/watches.json，DB <workspace>/.dsh/watch/watch.db。
+# 在 profile 的 cordis.patch.yml 里覆盖 watch 行 config（不要用 insert：bundle 已插入该行）：
 #
 #   - id: watch
-#     name: dsh-watch-kit-plugin
 #     config:
-#       specDirs:
-#         - /Users/you/workspace/plugins/watch/watches
-#
-# 注意：profile patch 的覆盖会整体替换 config，未写的键回落到 Config 默认值。
+#       pollIntervalMs: 10000
+#       configFile: /abs/path/watches.json
+#       dbFile: /abs/path/watch.db
 - insert:
     - id: watch
       name: dsh-watch-kit-plugin
       config:
-        specDirs: []
+        pollIntervalMs: 10000
+        configFile: ''
+        dbFile: ''
