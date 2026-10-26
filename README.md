@@ -166,6 +166,10 @@ fi
 - 旧 watch 目录不再读取：把每个 watch 改写成 `watches.json` 的一个条目（`checker` 用 argv 指定原脚本与解释器），执行一次 `/watch-reload`。
 - 旧的调度/提醒逻辑不会自动迁移；原 checker 若依赖退出码或自定义触发消息，需要改成输出 JSON（`notify`/`message`/`error`）。
 
+## 开发
+
+架构、数据模型、调度/投递语义、Host API 约束、测试与发布流程见 [docs/development.md](https://github.com/rokyaria/dsh-watch-kit-plugin/blob/main/docs/development.md)。
+
 ## 兼容性
 
 | 项 | 说明 |

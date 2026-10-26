@@ -19,6 +19,7 @@
 - 合并唤醒：每个 target 每轮最多一条消息（≤20 watch / ≤16KB，超出丢弃后段）。
 - 投递失败计数，以及下一次成功投递时的一次性补偿段（不重试、不重放）。
 - 观测工具 `watch_runs`、`watch_sessions`。
+- 面向贡献者的 `docs/development.md`：架构、数据模型、调度/投递语义、Host API、测试与发布流程。
 
 ### Fixed
 
