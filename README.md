@@ -12,9 +12,20 @@
 - **可观测**：`watch_runs` 看运行/通知/失败统计，`watch_sessions` 查可用会话 id。
 - **不做**：无 OS 通知、无常驻服务、无沙箱；DSH 进程不运行时不会巡检。
 
+## 给只会用 agent 的用户（最短路径）
+
+把下面这段直接发给你的 agent：
+
+> 请帮我安装并配置 dsh-watch-kit-plugin（仓库：https://github.com/rokyaria/dsh-watch-kit-plugin）：
+> 1. 把仓库 clone 到本机，用 `plugin_manager install_bundle target=<clone 后的绝对路径>` 安装，确认返回 `application:"applied"`；若提示 `restart-required` 按提示重启 DSH。
+> 2. 先读仓库 README，按“快速开始”在这个工作区的 `.dsh/watch/watches.json` 创建一个 watch 示例（checker 按我的实际需求写）。
+> 3. 不要改 profile 的 `cordis.patch.yml`，直接用默认配置；完成后告诉我，我自己在输入框发 `/watch-reload`。
+
+你只需要做两件事：发上面这段；agent 完成后自己发送 `/watch-reload`（slash command 只能由你在会话里输入，agent 不能代发）。之后有事件时你会收到 `[WATCH 通知]`，也可让 agent 用 `watch_runs` 查看统计。
+
 ## 安装
 
-1. 让有 `plugin_manager` 权限的 agent 安装本仓库（`target` 为仓库**绝对路径**）：
+1. 让有 `plugin_manager` 权限的 agent 安装本仓库（`target` 为仓库**绝对路径**；仓库还不在本地时先 clone，例如 `git clone https://github.com/rokyaria/dsh-watch-kit-plugin`）：
 
    ```
    plugin_manager install_bundle target=<本仓库绝对路径>
@@ -22,7 +33,7 @@
 
    返回 `applied` 完成；`restart-required` 按提示重启 DSH；`already-installed` 或升级版本时先 `remove_bundle` 再 `install_bundle`。
 
-2. 在 profile 的 `cordis.patch.yml` 里覆盖 `watch` 行的 config（本插件 bundle 已插入该行）：
+2. **可选**：只有想固定路径或轮询间隔时，才在 profile 的 `cordis.patch.yml` 里覆盖 `watch` 行的 config（本插件 bundle 已插入该行）；不改也能直接用默认值：
 
    ```yaml
    - id: watch
@@ -32,7 +43,7 @@
        dbFile: /absolute/path/to/watch.db           # 省略 → <workspace>/.dsh/watch/watch.db
    ```
 
-   三个键都可省略，省略即用默认值；patch 会整体替换该行 config，保存后按 profile 是否启用热加载决定是否重启 DSH。
+   三个键都可省略，省略即用默认值；patch 会整体替换该行 config，保存后按 profile 是否启用热加载决定是否重启 DSH。只想快速用起来的用户/agent 可以跳过本步。
 
    `<workspace>` 默认取**最近一个可见会话的 cwd**（`ctx.sessionController.list`；DSH 的 `workingDirectory.defaultDirectory` 在桌面版通常是 profile 目录，不作为首选），都取不到时用 `process.cwd()`。默认路径：`<workspace>/.dsh/watch/watches.json` 与 `<workspace>/.dsh/watch/watch.db`；DB 父目录自动创建，配置文件不存在时 `/watch-reload` 报错。`configFile`/`dbFile` 也可写相对 `<workspace>` 的路径；**建议在 profile patch 里显式写绝对路径**，避免启动方式不同导致默认目录漂移。
 
@@ -55,7 +66,7 @@
    }
    ```
 
-2. 在会话里执行 `/watch-reload`：配置合法则同步进数据库；省略 `target` 的新 watch 会绑定到当前会话。启动不会自动导入配置文件，首次安装后必须手动执行一次。
+2. 你本人在输入框发送 `/watch-reload`（不能由 agent 代发）：配置合法则同步进数据库；省略 `target` 的新 watch 会绑定到当前会话。启动不会自动导入配置文件，首次安装后必须手动执行一次。
 3. 之后 checker 约每 60 秒运行一次（到期轮询，默认轮询间隔 10 秒）；输出 `{"notify":true,"message":"…"}` 时会话收到一条 `[WATCH 通知]`。
 
 ## 配置文件：watches.json
