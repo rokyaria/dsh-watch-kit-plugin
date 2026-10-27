@@ -1,6 +1,6 @@
 ---
 name: watch-mailbox
-description: "处理 dsh-watch-kit-plugin mailbox checker 的来信：read → reply/mark、身份行为、附件与来源验证的严格默认策略。"
+description: "处理 dsh-watch-kit-plugin mailbox checker 的来信：收到 [MAILBOX] 通知、查看/回复邮箱时，按 read → reply/mark、身份行为、附件与来源验证的严格默认策略执行。"
 ---
 
 # watch-mailbox 工作流

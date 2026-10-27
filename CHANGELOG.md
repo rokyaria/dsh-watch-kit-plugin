@@ -10,7 +10,7 @@
 ### Fixed
 
 - `skills/watch-kit/SKILL.md` 和 `extension/mailbox/skills/watch-mailbox/SKILL.md` 补上可直接发现的 YAML frontmatter（`name`/`description`），复制到 `.dsh/skills/` 后可直接使用。
-- 移除两个 `SKILL.md` 及运行时注册中的 `whenToUse` 元数据。DSH 默认模型侧 skill 目录只渲染 `name` + `description`，`whenToUse` 不参与自动触发；触发条件保留在 `description` 和正文首段。
+- 移除两个 `SKILL.md` 及运行时注册中的 `whenToUse` 元数据。DSH 默认模型侧 skill 目录只渲染 `name` + `description`，`whenToUse` 不参与自动触发；触发词集中到 `description`：`watch-mailbox` 补上“`[MAILBOX]` 通知 / 查看/回复邮箱”，`watch-kit` 原有触发词保留；正文首段仅作加载后确认。
 - 运行时 `ctx.skills.register` 注册前剥离 frontmatter，避免加载后的 skill body 重复显示 YAML。
 - 移除 skill 内的 `{{...}}` 占位符：`watch-kit` 指向公开 README，`watch-mailbox` 说明直接使用 `[MAILBOX]` 通知里的完整命令；不再依赖运行时路径替换。
 

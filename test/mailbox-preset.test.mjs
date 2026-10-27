@@ -15,6 +15,8 @@ test('shipped SKILL.md files have discoverable frontmatter', async () => {
   assert.doesNotMatch(watchKit, /whenToUse:/)
   assert.match(mailbox, /^---\nname: watch-mailbox\n/)
   assert.match(mailbox, /^---[\s\S]*?\ndescription: /)
+  assert.match(mailbox, /收到 \[MAILBOX\] 通知/)
+  assert.match(mailbox, /查看\/回复邮箱/)
   assert.doesNotMatch(mailbox, /whenToUse:/)
 })
 

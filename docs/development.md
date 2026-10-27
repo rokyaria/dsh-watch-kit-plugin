@@ -278,7 +278,7 @@ v0.1 → v0.2.1 是破坏性重写：旧管理命令、watch 目录、校验流�
 - 状态机：`temp` → 超时提醒并重置 → `acked`；reply 成功自动标记。
 - 多账户靠多个 watch entry 实现，复用现有 poller/合并/隔离，不是单 checker 轮询多邮箱。
 - `mail.py` 需要本机 Python 3.10+；插件本体不用 mailbox 时不需要 Python。
-- 随包 skill：`watch-kit` 提醒 agent 读 README；`watch-mailbox` 提供 read/reply/mark、身份/附件严格策略。两个 `SKILL.md` 带标准 `name`/`description` frontmatter，可直接复制到项目 `.dsh/skills/`；运行时注册会剥离 frontmatter。`whenToUse` 虽被解析，但默认模型侧目录不渲染它，不作为触发条件。项目级同名 skill 可覆盖。
+- 随包 skill：`watch-kit` 提醒 agent 读 README；`watch-mailbox` 提供 read/reply/mark、身份/附件严格策略。两个 `SKILL.md` 带标准 `name`/`description` frontmatter，可直接复制到项目 `.dsh/skills/`；运行时注册会剥离 frontmatter。`whenToUse` 虽被解析，但默认模型侧目录不渲染它，不作为触发条件；自动发现依赖 `description`，触发词应写在那里。项目级同名 skill 可覆盖。
 
 ## 13. 已知取舍与后续方向
 
