@@ -1,7 +1,6 @@
 ---
 name: watch-mailbox
 description: "处理 dsh-watch-kit-plugin mailbox checker 的来信：read → reply/mark、身份行为、附件与来源验证的严格默认策略。"
-whenToUse: "收到 [MAILBOX] 通知、用户让你查看/回复邮箱、处理待回邮件，或提到 watch-mailbox / mailbox checker 时。"
 ---
 
 # watch-mailbox 工作流
@@ -46,4 +45,4 @@ python3 <脚本> list   --pending --env-file <env> --state-dir <state> --allow-a
 
 ## 放宽行为
 
-这是随包默认的严格 skill。用户想放宽时，把本文件复制到项目级 `.dsh/skills/watch-mailbox/SKILL.md` 并修改（项目级同名 skill 优先于运行时注册的版本），然后重启/重新加载 skill 目录。本文件自带 `name`/`description`/`whenToUse` frontmatter，可直接被 skill 目录发现。
+这是随包默认的严格 skill。用户想放宽时，把本文件复制到项目级 `.dsh/skills/watch-mailbox/SKILL.md` 并修改（项目级同名 skill 优先于运行时注册的版本），然后重启/重新加载 skill 目录。本文件自带 `name`/`description` frontmatter，可直接被 skill 目录发现。

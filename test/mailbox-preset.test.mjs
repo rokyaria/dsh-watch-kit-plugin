@@ -11,9 +11,11 @@ test('shipped SKILL.md files have discoverable frontmatter', async () => {
   const watchKit = await readFile(new URL('../skills/watch-kit/SKILL.md', import.meta.url), 'utf8')
   const mailbox = await readFile(new URL('../extension/mailbox/skills/watch-mailbox/SKILL.md', import.meta.url), 'utf8')
   assert.match(watchKit, /^---\nname: watch-kit\n/)
-  assert.match(watchKit, /^---[\s\S]*?\nwhenToUse: /)
+  assert.match(watchKit, /^---[\s\S]*?\ndescription: /)
+  assert.doesNotMatch(watchKit, /whenToUse:/)
   assert.match(mailbox, /^---\nname: watch-mailbox\n/)
-  assert.match(mailbox, /^---[\s\S]*?\nwhenToUse: /)
+  assert.match(mailbox, /^---[\s\S]*?\ndescription: /)
+  assert.doesNotMatch(mailbox, /whenToUse:/)
 })
 
 test('preset mailbox maps env/state/allowlist to the bundled script argv', async () => {

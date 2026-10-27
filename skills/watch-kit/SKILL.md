@@ -1,7 +1,6 @@
 ---
 name: watch-kit
 description: "dsh-watch-kit-plugin 使用入口：watch 配置、checker 契约、/watch-reload、watch_runs/watch_sessions；先读 README 再动手。"
-whenToUse: "用户提到 dsh-watch-kit-plugin、watch 插件、巡检、定时检查、checker、/watch-reload、watch_runs、watch_sessions，或询问本插件怎么配置/怎么用时。"
 ---
 
 # dsh-watch-kit-plugin 使用入口
