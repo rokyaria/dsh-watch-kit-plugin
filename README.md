@@ -2,7 +2,7 @@
 
 > 给 DeepSeek Harness 的常驻巡检插件：按配置的间隔运行 checker，checker 只在「有事」时输出 `notify: true`，插件才唤醒 agent；其余时间零 token、零对话。
 >
-> **当前状态：v0.2.3（v0.2.1 重写 + 随包 mailbox 扩展）**。运行时事实源是 SQLite；watch 配置是一份 JSON 文件，编辑后执行一次 `/watch-reload` 生效。旧版命令、watch 目录与校验流程已删除，迁移见文末。
+> **当前状态：v0.2.3（v0.2.1 重写 + 随包 mailbox 扩展 + 可配置 limits）**。运行时事实源是 SQLite；watch 配置是一份 JSON 文件，编辑后执行一次 `/watch-reload` 生效。旧版命令、watch 目录与校验流程已删除，迁移见文末。
 
 ## 它是什么
 
@@ -43,7 +43,7 @@
        dbFile: /absolute/path/to/watch.db           # 省略 → <workspace>/.dsh/watch/watch.db
    ```
 
-   三个键都可省略，省略即用默认值；patch 会整体替换该行 config，保存后按 profile 是否启用热加载决定是否重启 DSH。只想快速用起来的用户/agent 可以跳过本步。
+   `pollIntervalMs`/`configFile`/`dbFile` 三个键都可省略；`limits` 也可省略（见下方“运行上限”）。patch 会整体替换该行 config，保存后按 profile 是否启用热加载决定是否重启 DSH。只想快速用起来的用户/agent 可以跳过本步。
 
    `<workspace>` 默认取**最近一个可见会话的 cwd**（`ctx.sessionController.list`；DSH 的 `workingDirectory.defaultDirectory` 在桌面版通常是 profile 目录，不作为首选），都取不到时用 `process.cwd()`。默认路径：`<workspace>/.dsh/watch/watches.json` 与 `<workspace>/.dsh/watch/watch.db`；DB 父目录自动创建，配置文件不存在时 `/watch-reload` 报错。`configFile`/`dbFile` 也可写相对 `<workspace>` 的路径；**建议在 profile patch 里显式写绝对路径**，避免启动方式不同导致默认目录漂移。
 

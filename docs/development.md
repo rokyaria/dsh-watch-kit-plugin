@@ -244,14 +244,14 @@ node --test test/*.test.mjs
 2. `node --test test/*.test.mjs`（必须全绿）
 3. `pnpm pack` 检查 tarball 文件清单（lib/locale/icon/cordis.patch.yml/README/CHANGELOG/LICENSE + extension/skills）
 4. 用 DSH 的 `plugin_manager install_bundle` 从仓库绝对路径安装，确认 `application:"applied"`、`warnings:[]`、version 正确
-5. 确认 Config schema 只有 3 个键、`watch_runs`/`watch_sessions` live、无旧工具/skill
+5. 确认 Config schema 为 4 个顶层键（`pollIntervalMs`/`configFile`/`dbFile`/`limits`，`limits` 下 `checker`/`message`/`scheduler`）、`watch_runs`/`watch_sessions` live、`watch-kit`/`watch-mailbox` skill 已注册、无旧工具/旧 skill
 6. `remove_bundle` 后 profile 文件恢复一致
 7. fresh clone（无 `node_modules`）再安装一次，验证 peer 解析
 8. 更新版本、CHANGELOG、tag，并推送 main/tag
 
 v0.1 → v0.2.1 是破坏性重写：旧管理命令、watch 目录、校验流程、skill、随包 docs/assets/examples 均不再读取；旧用户需把 watch 改写成 `watches.json`，执行一次 `/watch-reload`。
 
-## 12. 随包 mailbox 扩展（v0.2.2）
+## 12. 随包 mailbox 扩展（v0.2.2+）
 
 配置文件通过 `preset: "mailbox"` 指定扩展，不需要写 checker 路径或参数：
 
