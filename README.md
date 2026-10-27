@@ -2,7 +2,7 @@
 
 > 给 DeepSeek Harness 的常驻巡检插件：按配置的间隔运行 checker，checker 只在「有事」时输出 `notify: true`，插件才唤醒 agent；其余时间零 token、零对话。
 >
-> **当前状态：v0.2.2（v0.2.1 重写 + 随包 mailbox 扩展）**。运行时事实源是 SQLite；watch 配置是一份 JSON 文件，编辑后执行一次 `/watch-reload` 生效。旧版命令、watch 目录与校验流程已删除，迁移见文末。
+> **当前状态：v0.2.3（v0.2.1 重写 + 随包 mailbox 扩展）**。运行时事实源是 SQLite；watch 配置是一份 JSON 文件，编辑后执行一次 `/watch-reload` 生效。旧版命令、watch 目录与校验流程已删除，迁移见文末。
 
 ## 它是什么
 

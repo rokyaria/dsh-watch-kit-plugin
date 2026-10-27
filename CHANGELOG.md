@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.3 — 2026-10-28
+
+### Fixed
+
+- `skills/watch-kit/SKILL.md` 和 `extension/mailbox/skills/watch-mailbox/SKILL.md` 补上可直接发现的 YAML frontmatter（`name`/`description`/`whenToUse`），复制到 `.dsh/skills/` 后可直接使用。
+- 运行时 `ctx.skills.register` 注册前剥离 frontmatter，避免加载后的 skill body 重复显示 YAML。
+- 移除 skill 内的 `{{...}}` 占位符：`watch-kit` 指向公开 README，`watch-mailbox` 说明直接使用 `[MAILBOX]` 通知里的完整命令；不再依赖运行时路径替换。
+
+### Changed
+
+- 版本 0.2.3。
+
 ## 0.2.2 — 2026-10-28
 
 ### Added

@@ -65,6 +65,7 @@ test('apply resolves the default workspace from the most recent visible session 
       assert.ok(host.state.skills[1].content.includes('mail.py'))
       assert.ok(host.state.skills[0].content.includes('不要凭空发明命令'))
       assert.ok(host.state.skills.every((skill) => !skill.content.includes('{{')))
+      assert.ok(host.state.skills.every((skill) => !skill.content.startsWith('---')))
       assert.equal(host.state.intervals.length, 1)
       assert.equal(host.state.intervals[0].ms, DEFAULT_POLL_MS)
       await waitFor(() => host.subprocess.spawns.length === 1, { timeout: 2_000 })

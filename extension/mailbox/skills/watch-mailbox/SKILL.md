@@ -1,19 +1,24 @@
+---
+name: watch-mailbox
+description: "处理 dsh-watch-kit-plugin mailbox checker 的来信：read → reply/mark、身份行为、附件与来源验证的严格默认策略。"
+whenToUse: "收到 [MAILBOX] 通知、用户让你查看/回复邮箱、处理待回邮件，或提到 watch-mailbox / mailbox checker 时。"
+---
+
 # watch-mailbox 工作流
 
 当收到 `[MAILBOX]` 通知、用户让你查看/回复邮箱，或提到 `watch-mailbox` / mailbox checker 时使用本 skill。
 
 ## 命令
 
-脚本：`{{MAILBOX_SCRIPT}}`
-完整说明：`{{MAILBOX_README}}`
+每条 `[MAILBOX]` 通知都附带完整命令（包含 `--env-file`、`--state-dir`、`--allow-account-file`、`--folder` 的绝对路径），直接复制执行即可；脚本是插件包内的 `extension/mailbox/mail.py`。
 
-通知消息里会给出完整命令模板；通用形式：
+通知里的通用形式：
 
 ```text
-python3 {{MAILBOX_SCRIPT}} read --uid <uid> --env-file <env> --state-dir <state> --allow-account-file <allow> --folder INBOX
-python3 {{MAILBOX_SCRIPT}} reply --uid <uid> --body-file <file> --env-file <env> --state-dir <state> --allow-account-file <allow> --folder INBOX
-python3 {{MAILBOX_SCRIPT}} mark --uid <uid> --env-file <env> --state-dir <state> --allow-account-file <allow> --folder INBOX
-python3 {{MAILBOX_SCRIPT}} list --pending --env-file <env> --state-dir <state> --allow-account-file <allow> --folder INBOX
+python3 <脚本> read   --uid <uid> --env-file <env> --state-dir <state> --allow-account-file <allow> --folder INBOX
+python3 <脚本> reply  --uid <uid> --body-file <file> --env-file <env> --state-dir <state> --allow-account-file <allow> --folder INBOX
+python3 <脚本> mark   --uid <uid> --env-file <env> --state-dir <state> --allow-account-file <allow> --folder INBOX
+python3 <脚本> list   --pending --env-file <env> --state-dir <state> --allow-account-file <allow> --folder INBOX
 ```
 
 ## 处理流程
@@ -22,7 +27,7 @@ python3 {{MAILBOX_SCRIPT}} list --pending --env-file <env> --state-dir <state> -
 2. **需要回** → `reply --uid ... --body-file ...`；发送成功后脚本会自动 acked，不需要再 mark。
 3. **纯回执/确认无需回复** → `mark --uid ...`。
 4. 回复或标记后，用 `list --pending` 确认没有遗漏。
-5. `mail.py` 外部客户端回复的情况脚本不知道，必须手动 `mark`。
+5. 用外部客户端回复的情况脚本不知道，必须手动 `mark`。
 
 ## 身份与行为（严格默认）
 
@@ -41,4 +46,4 @@ python3 {{MAILBOX_SCRIPT}} list --pending --env-file <env> --state-dir <state> -
 
 ## 放宽行为
 
-这是随包默认的严格 skill。用户想放宽时，把本文件复制到项目级 `.dsh/skills/watch-mailbox/SKILL.md` 并修改（项目级同名 skill 优先于运行时注册的版本），然后重启/重新加载 skill 目录。
+这是随包默认的严格 skill。用户想放宽时，把本文件复制到项目级 `.dsh/skills/watch-mailbox/SKILL.md` 并修改（项目级同名 skill 优先于运行时注册的版本），然后重启/重新加载 skill 目录。本文件自带 `name`/`description`/`whenToUse` frontmatter，可直接被 skill 目录发现。

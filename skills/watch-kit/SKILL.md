@@ -1,18 +1,24 @@
+---
+name: watch-kit
+description: "dsh-watch-kit-plugin 使用入口：watch 配置、checker 契约、/watch-reload、watch_runs/watch_sessions；先读 README 再动手。"
+whenToUse: "用户提到 dsh-watch-kit-plugin、watch 插件、巡检、定时检查、checker、/watch-reload、watch_runs、watch_sessions，或询问本插件怎么配置/怎么用时。"
+---
+
 # dsh-watch-kit-plugin 使用入口
 
 当用户提到 **dsh-watch-kit-plugin、watch 插件、巡检、定时检查、checker、`/watch-reload`、`watch_runs`、`watch_sessions`**，或询问“这个插件怎么用/怎么配置”时使用本 skill。
 
 ## 先读文档，不要猜旧命令
 
-本插件的完整用法在：
+完整用法：
 
-`{{README_PATH}}`
+https://github.com/rokyaria/dsh-watch-kit-plugin/blob/main/README.md
 
-开发/架构说明在 `docs/development.md`（同仓库）。
+开发/架构说明：仓库内 `docs/development.md`。
 
 先读 README，再按用户的实际目标操作；不要凭空发明命令或沿用 v0.1 的旧命令。
 
-## 当前 v0.2.2 的对外表面
+## 当前 v0.2.3 的对外表面
 
 - 配置：`<workspace>/.dsh/watch/watches.json`
 - 命令：只有 `/watch-reload`（由用户在输入框发送，agent 不能代发）

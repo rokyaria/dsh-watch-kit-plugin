@@ -227,7 +227,7 @@ pnpm install
 node --test test/*.test.mjs
 ```
 
-- Node：9 个测试文件、68 个测试（新增 `mailbox-preset` 4 个）；Python：`python3 -m unittest discover -s test/python -v`，15 个 fake IMAP/SMTP 测试（也可 `pnpm test:mailbox`）。
+- Node：9 个测试文件、69 个测试（新增 `mailbox-preset` 5 个）；Python：`python3 -m unittest discover -s test/python -v`，15 个 fake IMAP/SMTP 测试（也可 `pnpm test:mailbox`）。
 - 使用真实临时 `node:sqlite` DB + fake host（commands/tools/sessionController/subprocess/timer/workingDirectory/logger），不依赖网络或真实会话。
 - 覆盖重点：schema/claim 事务/多连接不重复 claim、软删除/复活、JSON 契约/失败分类/字节上限、合并消息/补偿/128 字符/10 行、超限截断记账、单条失败错误隔离、reload 原子性/target 绑定、watch_runs 窗口/聚合、watch_sessions signal/排序/50 条、async apply/默认路径/dispose、真实 DB 端到端。
 - 修改行为时先加/改测试；测试不应弱化“只标记实际投递的 watch”“失败不重试”等不变量。
@@ -275,7 +275,7 @@ v0.1 → v0.2.1 是破坏性重写：旧管理命令、watch 目录、校验流�
 - 状态机：`temp` → 超时提醒并重置 → `acked`；reply 成功自动标记。
 - 多账户靠多个 watch entry 实现，复用现有 poller/合并/隔离，不是单 checker 轮询多邮箱。
 - `mail.py` 需要本机 Python 3.10+；插件本体不用 mailbox 时不需要 Python。
-- 随包 skill：`watch-kit` 提醒 agent 读 README；`watch-mailbox` 提供 read/reply/mark、身份/附件严格策略，项目级同名 skill 可覆盖。
+- 随包 skill：`watch-kit` 提醒 agent 读 README；`watch-mailbox` 提供 read/reply/mark、身份/附件严格策略。两个 `SKILL.md` 带标准 frontmatter，可直接复制到项目 `.dsh/skills/`；运行时注册会剥离 frontmatter。项目级同名 skill 可覆盖。
 
 ## 13. 已知取舍与后续方向
 
