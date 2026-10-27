@@ -135,9 +135,10 @@ export function makeSession({ sessions = [], failPlan = [] } = {}) {
 
 /** Fake host ctx. Records commands/tools/intervals/effects for assertions. */
 export function makeHostCtx({ workspace = '/workspace', session = makeSession(), subprocess = makeFakeSubprocess(), logger = makeLogger() } = {}) {
-  const state = { commands: [], tools: [], intervals: [], effects: [] }
+  const state = { commands: [], tools: [], skills: [], intervals: [], effects: [] }
   const registerCommand = (definition) => { state.commands.push(definition); return () => { definition.disposed = true } }
   const registerTool = (tool) => { state.tools.push(tool); return () => { tool.disposed = true } }
+  const registerSkill = (skill) => { state.skills.push(skill); return () => { skill.disposed = true } }
   const interval = (callback, ms) => {
     const entry = { callback, ms, cleared: false }
     state.intervals.push(entry)
@@ -148,6 +149,7 @@ export function makeHostCtx({ workspace = '/workspace', session = makeSession(),
     workingDirectory: { defaultDirectory: workspace },
     commands: { register: registerCommand },
     tools: { register: registerTool },
+    skills: { register: registerSkill },
     sessionController: session.sessionController,
     subprocess,
     timer: { interval, setTimeout: (fn, ms) => setTimeout(fn, ms) },

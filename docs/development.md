@@ -44,8 +44,10 @@ runs 记账：delivered / last_notify_at / 投递失败补偿
 | `lib/poller.js` | 轮询、并发、投递、失败补偿、清理、stop/dispose |
 | `lib/commands.js` | `/watch-reload`：配置校验、事务同步、target 绑定 |
 | `lib/tools.js` | `watch_runs`、`watch_sessions` 两个模型工具 |
+| `lib/skills.js` | 注册随包运行时 skill：`watch-kit`、`watch-mailbox` |
+| `extension/mailbox/` | 随包 mailbox checker/CLI、模板与 skill（Python 3.10+，仅标准库） |
 
-依赖注入：`inject = ['commands','tools','sessionController','subprocess','timer','workingDirectory']`。没有 skill，没有旧命令，没有随包模板。
+依赖注入：`inject = ['commands','tools','skills','sessionController','subprocess','timer','workingDirectory']`。`skills` 用于注册 `watch-kit` / `watch-mailbox`；扩展代码/模板在 `extension/`。
 
 ## 3. 运行时存储
 
@@ -225,10 +227,11 @@ pnpm install
 node --test test/*.test.mjs
 ```
 
-- 8 个测试文件、64 个测试：`db`（11）、`checker`（8）、`render`（7）、`poller`（14）、`commands`（6）、`tools`（6）、`apply`（8）、`integration`（4），外加 `helpers/harness.mjs`。
+- Node：9 个测试文件、68 个测试（新增 `mailbox-preset` 4 个）；Python：`python3 -m unittest discover -s test/python -v`，15 个 fake IMAP/SMTP 测试（也可 `pnpm test:mailbox`）。
 - 使用真实临时 `node:sqlite` DB + fake host（commands/tools/sessionController/subprocess/timer/workingDirectory/logger），不依赖网络或真实会话。
 - 覆盖重点：schema/claim 事务/多连接不重复 claim、软删除/复活、JSON 契约/失败分类/字节上限、合并消息/补偿/128 字符/10 行、超限截断记账、单条失败错误隔离、reload 原子性/target 绑定、watch_runs 窗口/聚合、watch_sessions signal/排序/50 条、async apply/默认路径/dispose、真实 DB 端到端。
 - 修改行为时先加/改测试；测试不应弱化“只标记实际投递的 watch”“失败不重试”等不变量。
+- 随包 mailbox 的状态机/allowlist/身份/回复测试在 `test/python/`，运行需要 Python 3.10+，不依赖第三方库。
 
 ## 11. 发布与兼容
 
@@ -236,7 +239,7 @@ node --test test/*.test.mjs
 
 1. `pnpm install --frozen-lockfile`
 2. `node --test test/*.test.mjs`（必须全绿）
-3. `pnpm pack` 检查 tarball 文件清单（lib/locale/icon/cordis.patch.yml/README/CHANGELOG/LICENSE）
+3. `pnpm pack` 检查 tarball 文件清单（lib/locale/icon/cordis.patch.yml/README/CHANGELOG/LICENSE + extension/skills）
 4. 用 DSH 的 `plugin_manager install_bundle` 从仓库绝对路径安装，确认 `application:"applied"`、`warnings:[]`、version 正确
 5. 确认 Config schema 只有 3 个键、`watch_runs`/`watch_sessions` live、无旧工具/skill
 6. `remove_bundle` 后 profile 文件恢复一致
@@ -245,7 +248,36 @@ node --test test/*.test.mjs
 
 v0.1 → v0.2.1 是破坏性重写：旧管理命令、watch 目录、校验流程、skill、随包 docs/assets/examples 均不再读取；旧用户需把 watch 改写成 `watches.json`，执行一次 `/watch-reload`。
 
-## 12. 已知取舍与后续方向
+## 12. 随包 mailbox 扩展（v0.2.2）
+
+配置文件通过 `preset: "mailbox"` 指定扩展，不需要写 checker 路径或参数：
+
+```json
+{
+  "id": "mailbox-account-1",
+  "preset": "mailbox",
+  "enabled": false,
+  "mailbox": {
+    "envFile": "/abs/path/mail.env",
+    "stateDir": "/abs/path/.dsh/mailbox",
+    "allowAccountFile": "/abs/path/allow-accounts.json",
+    "remindAfterMinutes": 30,
+    "folder": "INBOX",
+    "python": "python3"
+  },
+  "interval": 60,
+  "timeout": 60
+}
+```
+
+- 一个账户一个 watch；`stateDir`/allowlist 可共享，脚本按 `MAIL_ADDRESS` 生成独立状态文件。
+- 默认 allowlist 为空 = 不通知；格式 `{account: [{address, identity}]}`，支持 `*`。
+- 状态机：`temp` → 超时提醒并重置 → `acked`；reply 成功自动标记。
+- 多账户靠多个 watch entry 实现，复用现有 poller/合并/隔离，不是单 checker 轮询多邮箱。
+- `mail.py` 需要本机 Python 3.10+；插件本体不用 mailbox 时不需要 Python。
+- 随包 skill：`watch-kit` 提醒 agent 读 README；`watch-mailbox` 提供 read/reply/mark、身份/附件严格策略，项目级同名 skill 可覆盖。
+
+## 13. 已知取舍与后续方向
 
 1. **渲染预算保守**：为补偿段固定预留 4KB，极端情况下可能丢掉一条本可放进 16KB 的事件；丢弃提示在空间不足时可能不出现。
 2. **未来 schema 的 DB**：`user_version > 1` 会拒绝，但打开时可能已经执行 WAL/建表语句；正常版本（0/1）不受影响。

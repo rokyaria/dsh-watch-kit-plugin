@@ -1,0 +1,9 @@
+{
+  "agent-mail-1@example.com": [
+    { "address": "owner@example.com", "identity": "user" },
+    { "address": "guest@example.com", "identity": "guest" }
+  ],
+  "agent-mail-2@example.com": [
+    { "address": "*", "identity": "guest" }
+  ]
+}

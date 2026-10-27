@@ -38,7 +38,7 @@ const logText = (host) => host.logger.lines.map((line) => line.message).join('\n
 
 test('exports the plugin name, inject list and Config defaults', () => {
   assert.equal(name, 'watch')
-  assert.deepEqual(inject, ['commands', 'tools', 'sessionController', 'subprocess', 'timer', 'workingDirectory'])
+  assert.deepEqual(inject, ['commands', 'tools', 'skills', 'sessionController', 'subprocess', 'timer', 'workingDirectory'])
   assert.deepEqual(Config({}), { pollIntervalMs: DEFAULT_POLL_MS, configFile: '', dbFile: '' })
   assert.throws(() => Config({ pollIntervalMs: 999 }), /pollIntervalMs/)
 })
@@ -60,6 +60,11 @@ test('apply resolves the default workspace from the most recent visible session 
       assert.ok(host.session.lists[0].signal instanceof AbortSignal)
       assert.deepEqual(host.state.commands.map((command) => command.name), ['watch-reload'])
       assert.deepEqual(host.state.tools.map((tool) => tool.name), ['watch_runs', 'watch_sessions'])
+      assert.deepEqual(host.state.skills.map((skill) => skill.name), ['watch-kit', 'watch-mailbox'])
+      assert.ok(host.state.skills[0].content.includes('README.md'))
+      assert.ok(host.state.skills[1].content.includes('mail.py'))
+      assert.ok(host.state.skills[0].content.includes('不要凭空发明命令'))
+      assert.ok(host.state.skills.every((skill) => !skill.content.includes('{{')))
       assert.equal(host.state.intervals.length, 1)
       assert.equal(host.state.intervals[0].ms, DEFAULT_POLL_MS)
       await waitFor(() => host.subprocess.spawns.length === 1, { timeout: 2_000 })
@@ -127,6 +132,7 @@ test('dispose clears the interval, stops polling and unregisters command/tools',
     assert.equal(interval.cleared, true, 'poll interval is cleared')
     assert.equal(command.disposed, true, 'command is unregistered')
     assert.equal(tool.disposed, true, 'tools are unregistered')
+    assert.equal(host.state.skills.every((skill) => skill.disposed === true), true, 'skills are unregistered')
     interval.callback()
     await new Promise((resolve) => setTimeout(resolve, 20))
     assert.equal(subprocess.spawns.length, 1, 'no poll after dispose')

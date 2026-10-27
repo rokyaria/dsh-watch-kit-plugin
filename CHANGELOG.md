@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.2 — 2026-10-28
+
+### Added
+
+- 随包 `extension/mailbox/` 扩展：单文件 `mail.py`（Python 3.10+，仅标准库）同时作为 checker 和 agent CLI，支持 IMAP/SMTP、附件、多账户。
+- `watches.json` 的 `preset: "mailbox"`：直接配置 `envFile`/`stateDir`/`allowAccountFile`/`remindAfterMinutes`，插件自动映射到随包脚本，用户不需要写 checker 路径或参数。
+- JSONL 状态机：新信 `temp` → 30 分钟未处理提醒并延长免打扰 → reply 成功自动 `acked`，或显式 `mark`；首次运行默认建立基线不通知历史邮件。
+- per-account allowlist（`user`/`guest`，支持 `*`）：默认不通知任何人；user 检查 SPF/DKIM，guest 采用保守回复与附件策略。
+- 随包运行时 skill：`watch-kit`（用户提到本插件时先读 README）、`watch-mailbox`（read/reply/mark、身份与附件严格策略）。
+- 扩展模板：`mail.env.example`、`allow-accounts.example.json`、`watches.example.json`（mailbox entry 默认 `enabled: false`）。
+
+### Changed
+
+- 版本 0.2.2；npm `files` 增加 `extension/` 与 `skills/`；包内文档入口增加 mailbox 扩展说明。
+- 新增技能的注册依赖 `skills` 服务；插件 inject 增加 `skills`。
+
 ## 0.2.1 — 2026-10-27
 
 > 破坏性重写：从「命令创建 + watch 目录 + 校验流程」改为「SQLite 配置 + 轮询 + JSON checker 契约 + 合并唤醒 + 观测工具」。

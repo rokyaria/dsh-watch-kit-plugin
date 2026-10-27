@@ -1,0 +1,19 @@
+{
+  "watches": [
+    {
+      "id": "mailbox-account-1",
+      "preset": "mailbox",
+      "enabled": false,
+      "mailbox": {
+        "envFile": "/absolute/path/to/mail.env",
+        "stateDir": "/absolute/path/to/.dsh/mailbox",
+        "allowAccountFile": "/absolute/path/to/allow-accounts.json",
+        "remindAfterMinutes": 30,
+        "folder": "INBOX",
+        "python": "python3"
+      },
+      "interval": 60,
+      "timeout": 60
+    }
+  ]
+}

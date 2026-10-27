@@ -2,7 +2,7 @@
 
 > 给 DeepSeek Harness 的常驻巡检插件：按配置的间隔运行 checker，checker 只在「有事」时输出 `notify: true`，插件才唤醒 agent；其余时间零 token、零对话。
 >
-> **当前状态：v0.2.1（破坏性重写）**。运行时事实源是 SQLite；watch 配置是一份 JSON 文件，编辑后执行一次 `/watch-reload` 生效。旧版命令、watch 目录与校验流程已删除，迁移见文末。
+> **当前状态：v0.2.2（v0.2.1 重写 + 随包 mailbox 扩展）**。运行时事实源是 SQLite；watch 配置是一份 JSON 文件，编辑后执行一次 `/watch-reload` 生效。旧版命令、watch 目录与校验流程已删除，迁移见文末。
 
 ## 它是什么
 
@@ -68,6 +68,30 @@
 
 2. 你本人在输入框发送 `/watch-reload`（不能由 agent 代发）：配置合法则同步进数据库；省略 `target` 的新 watch 会绑定到当前会话。启动不会自动导入配置文件，首次安装后必须手动执行一次。
 3. 之后 checker 约每 60 秒运行一次（到期轮询，默认轮询间隔 10 秒）；输出 `{"notify":true,"message":"…"}` 时会话收到一条 `[WATCH 通知]`。
+
+## 随包 mailbox checker（可选）
+
+仓库 `extension/mailbox/` 里附带一个零第三方依赖的 Python mailbox checker：`mail.py` 同时是 checker 和 agent 的邮箱 CLI，支持多账户、allowlist（user/guest）、临时标记、30 分钟未处理提醒、回复自动标记。使用 `preset: "mailbox"` 时不需要配置 checker 路径或参数：
+
+```json
+{
+  "id": "mailbox-account-1",
+  "preset": "mailbox",
+  "enabled": false,
+  "mailbox": {
+    "envFile": "/absolute/path/to/mail.env",
+    "stateDir": "/absolute/path/to/.dsh/mailbox",
+    "allowAccountFile": "/absolute/path/to/allow-accounts.json",
+    "remindAfterMinutes": 30,
+    "folder": "INBOX",
+    "python": "python3"
+  },
+  "interval": 60,
+  "timeout": 60
+}
+```
+
+默认所有人都不通知，必须用 per-account allowlist 显式允许；不能把授权码写进 `watches.json`。完整说明、模板和严格行为见 [extension/mailbox/README.md](https://github.com/rokyaria/dsh-watch-kit-plugin/blob/main/extension/mailbox/README.md)。插件还会随包注册 `watch-kit` / `watch-mailbox` 两个运行时 skill。
 
 ## 配置文件：watches.json
 
