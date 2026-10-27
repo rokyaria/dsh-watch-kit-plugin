@@ -37,7 +37,7 @@ runs 记账：delivered / last_notify_at / 投递失败补偿
 | 文件 | 职责 |
 |---|---|
 | `lib/index.js` | Cordis 插件入口：解析路径、打开 DB、装配 Poller、注册命令/工具、管理生命周期 |
-| `lib/config.js` | schemastery Config：`pollIntervalMs`、`configFile`、`dbFile` |
+| `lib/config.js` | schemastery Config：`pollIntervalMs`、`configFile`、`dbFile`、`limits` |
 | `lib/db.js` | `WatchDB`：schema、claim、配置同步、runs、投递计数、聚合查询 |
 | `lib/checker.js` | 执行 checker、收集 stdout/stderr、处理超时、解析 JSON 契约 |
 | `lib/render.js` | 合并消息渲染；返回 `includedIds`，供投递记账使用 |
@@ -48,6 +48,8 @@ runs 记账：delivered / last_notify_at / 投递失败补偿
 | `extension/mailbox/` | 随包 mailbox checker/CLI、模板与 skill（Python 3.10+，仅标准库） |
 
 依赖注入：`inject = ['commands','tools','skills','sessionController','subprocess','timer','workingDirectory']`。`skills` 用于注册 `watch-kit` / `watch-mailbox`；扩展代码/模板在 `extension/`。
+
+`limits` 是插件级运行上限，通过 apply 注入 Poller/checker/render/cleanup：`checker.maxStdoutBytes`、`maxStderrBytes`、`maxMessageBytes`、`maxErrorBytes`；`message.maxItems`、`maxBytes`；`scheduler.maxConcurrentChecks`、`runRetentionDays`。默认值等于原常量，所有值都有上下限护栏。
 
 ## 3. 运行时存储
 
@@ -164,6 +166,7 @@ CREATE TABLE runs (
 - 超时（`timeout` 秒）由插件调用 `handle.terminate()`，记为 `timeout`；进程不退出时还有兜底 give-up 计时。
 - **退出码不参与语义**，只看 stdout。
 - 只认 stdout 的合法 JSON 对象；空输出、数组、原始值、非 JSON、stdout 超限（`lossy`）都算失败。
+- stdout 只是唤醒信号：正文/大结果应由 checker 写入文件，message 只放摘要/路径；`limits.checker.maxMessageBytes` 默认 8192。
 
 JSON 字段：
 
@@ -227,7 +230,7 @@ pnpm install
 node --test test/*.test.mjs
 ```
 
-- Node：9 个测试文件、69 个测试（新增 `mailbox-preset` 5 个）；Python：`python3 -m unittest discover -s test/python -v`，15 个 fake IMAP/SMTP 测试（也可 `pnpm test:mailbox`）。
+- Node：9 个测试文件、72 个测试（新增 `mailbox-preset` 5 个）；Python：`python3 -m unittest discover -s test/python -v`，15 个 fake IMAP/SMTP 测试（也可 `pnpm test:mailbox`）。
 - 使用真实临时 `node:sqlite` DB + fake host（commands/tools/sessionController/subprocess/timer/workingDirectory/logger），不依赖网络或真实会话。
 - 覆盖重点：schema/claim 事务/多连接不重复 claim、软删除/复活、JSON 契约/失败分类/字节上限、合并消息/补偿/128 字符/10 行、超限截断记账、单条失败错误隔离、reload 原子性/target 绑定、watch_runs 窗口/聚合、watch_sessions signal/排序/50 条、async apply/默认路径/dispose、真实 DB 端到端。
 - 修改行为时先加/改测试；测试不应弱化“只标记实际投递的 watch”“失败不重试”等不变量。

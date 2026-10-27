@@ -99,6 +99,20 @@ test('spawn spec: argv, cwd fallback, WATCH_* env and output caps are passed to 
   assert.equal(cwdSubprocess.spawns[0].cwd, '/watch/cwd', 'watch.cwd wins when set')
 })
 
+
+test('configured byte limits override the exported defaults', async () => {
+  const caps = { maxStdoutBytes: 80, maxStderrBytes: 40, maxMessageBytes: 5, maxErrorBytes: 4 }
+  assert.equal(parseCheckerOutput({ stdout: '{"notify":false}', limits: caps }).status, 'ok')
+  assert.equal(
+    parseCheckerOutput({ stdout: '{"notify":true,"message":"123456"}', limits: caps }).status,
+    'invalid_fields',
+  )
+  const subprocess = makeFakeSubprocess([{ stdout: '{"notify":false}' }])
+  await runChecker({ subprocess, watch: WATCH, argv: ARGV, configDir: '/cfg', limits: caps })
+  assert.equal(subprocess.spawns[0].stdio.stdout.maxBytes, 80)
+  assert.equal(subprocess.spawns[0].stdio.stderr.maxBytes, 40)
+})
+
 test('spawn failure is classified as spawn_error (thrown or empty argv)', async () => {
   const throwing = makeFakeSubprocess([{ spawnError: 'ENOENT bash' }])
   const result = await run(throwing)

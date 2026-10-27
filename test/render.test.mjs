@@ -14,6 +14,16 @@ const NOW = 1_800_000_000_000
 const item = (overrides = {}) => ({ id: 'mail-inbox', intervalMs: 60_000, message: 'new mail', ...overrides })
 const compensate = (overrides = {}) => ({ id: 'mail-inbox', count: 1, firstFailAt: NOW - 3_600_000, error: 'gateway/internal', ...overrides })
 
+
+test('configured item and byte caps override the defaults', () => {
+  const items = Array.from({ length: 5 }, (_, index) => item({ id: `w${index}`, message: `msg ${index}` }))
+  const detailed = renderMergedMessageDetailed({ items, now: NOW, maxItems: 2, maxBytes: 8192 })
+  assert.deepEqual(detailed.includedIds, ['w0', 'w1'])
+  assert.equal(detailed.truncated, true)
+  assert.match(detailed.text, /另有 3 个事件未列出/)
+  assert.ok(Buffer.byteLength(detailed.text, 'utf8') <= 8192)
+})
+
 test('single-target merged message: header, per-watch section and message', () => {
   const message = renderMergedMessage({ items: [item()], now: NOW })
   assert.match(message, /^\[WATCH 通知\] 1 个事件/)

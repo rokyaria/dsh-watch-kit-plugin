@@ -2,6 +2,11 @@
 
 ## 0.2.3 — 2026-10-28
 
+### Added
+
+- 插件 Config 新增 `limits.checker` / `limits.message` / `limits.scheduler`，可覆盖原来写死在 `lib/checker.js`、`lib/render.js`、`lib/poller.js` 的 stdout/stderr/message/error 字节上限、合并消息条数/字节上限、单轮并发和 runs 保留天数；带上下限护栏，默认值保持原行为。
+- README/development 文档说明 stdout 只应作为唤醒信号，正文/大结果写文件。
+
 ### Fixed
 
 - `skills/watch-kit/SKILL.md` 和 `extension/mailbox/skills/watch-mailbox/SKILL.md` 补上可直接发现的 YAML frontmatter（`name`/`description`/`whenToUse`），复制到 `.dsh/skills/` 后可直接使用。

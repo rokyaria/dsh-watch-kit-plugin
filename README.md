@@ -47,6 +47,30 @@
 
    `<workspace>` 默认取**最近一个可见会话的 cwd**（`ctx.sessionController.list`；DSH 的 `workingDirectory.defaultDirectory` 在桌面版通常是 profile 目录，不作为首选），都取不到时用 `process.cwd()`。默认路径：`<workspace>/.dsh/watch/watches.json` 与 `<workspace>/.dsh/watch/watch.db`；DB 父目录自动创建，配置文件不存在时 `/watch-reload` 报错。`configFile`/`dbFile` 也可写相对 `<workspace>` 的路径；**建议在 profile patch 里显式写绝对路径**，避免启动方式不同导致默认目录漂移。
 
+### 运行上限（可选）
+
+插件 Config 还有一个 `limits` 对象；不配置就是原来的默认值。它通过 profile 的 `cordis.patch.yml` 覆盖，不能按单条 watch 配置：
+
+```yaml
+- id: watch
+  config:
+    pollIntervalMs: 10000
+    limits:
+      checker:
+        maxStdoutBytes: 65536       # 4KiB–4MiB
+        maxStderrBytes: 8192        # 512B–1MiB
+        maxMessageBytes: 8192       # 256B–4MiB
+        maxErrorBytes: 2048         # 64B–1MiB
+      message:
+        maxItems: 20                # 1–100
+        maxBytes: 16384             # 8KiB–4MiB
+      scheduler:
+        maxConcurrentChecks: 4      # 1–16
+        runRetentionDays: 7         # 1–365
+```
+
+这些值只影响插件运行参数，不改变 `watches.json` 的 checker 契约；改完需要重启/重新安装插件让 Config 生效。
+
 ## 快速开始
 
 1. 新建 `watches.json`（可直接用默认路径 `<workspace>/.dsh/watch/watches.json`）：
@@ -116,6 +140,7 @@
 - 超时（`timeout` 秒）由插件终止 checker，记为 `timeout`。
 - stdout 上限 64KB、stderr 上限 8KB（stderr 尾部写入运行记录）；stdout 超限按 `invalid_json` 处理。
 - **只认 stdout 的合法 JSON**（空输出也算 `invalid_json`）；进程退出码不参与语义（只有进程级失败才记录：`spawn_error`/`timeout`）。
+- stdout 是唤醒信号，不是数据通道：正文/大结果应写入文件，message 里只放摘要和文件路径；`maxMessageBytes` 默认只有 8192。
 
 | 字段 | 类型 | 说明 |
 |---|---|---|

@@ -14,6 +14,11 @@ import { WatchDB } from '../lib/db.js'
 import { cleanup, makeFakeSubprocess, makeHostCtx, makeSession, makeTmp, rawRun, waitFor, watchEntry } from './helpers/harness.mjs'
 
 const DEFAULT_POLL_MS = 10_000
+const DEFAULT_LIMITS = {
+  checker: { maxStdoutBytes: 65536, maxStderrBytes: 8192, maxMessageBytes: 8192, maxErrorBytes: 2048 },
+  message: { maxItems: 20, maxBytes: 16384 },
+  scheduler: { maxConcurrentChecks: 4, runRetentionDays: 7 },
+}
 const exists = (file) => stat(file).then(() => true, () => false)
 
 async function withWorkspace(fn) {
@@ -39,8 +44,12 @@ const logText = (host) => host.logger.lines.map((line) => line.message).join('\n
 test('exports the plugin name, inject list and Config defaults', () => {
   assert.equal(name, 'watch')
   assert.deepEqual(inject, ['commands', 'tools', 'skills', 'sessionController', 'subprocess', 'timer', 'workingDirectory'])
-  assert.deepEqual(Config({}), { pollIntervalMs: DEFAULT_POLL_MS, configFile: '', dbFile: '' })
+  assert.deepEqual(Config({}), { pollIntervalMs: DEFAULT_POLL_MS, configFile: '', dbFile: '', limits: DEFAULT_LIMITS })
   assert.throws(() => Config({ pollIntervalMs: 999 }), /pollIntervalMs/)
+  assert.equal(Config({ limits: { checker: { maxStdoutBytes: 8192 } } }).limits.checker.maxStdoutBytes, 8192)
+  assert.equal(Config({ limits: { checker: { maxStdoutBytes: 8192 } } }).limits.message.maxItems, 20)
+  assert.throws(() => Config({ limits: { checker: { maxStdoutBytes: 1 } } }), /maxStdoutBytes/)
+  assert.throws(() => Config({ limits: { scheduler: { runRetentionDays: 0 } } }), /runRetentionDays/)
 })
 
 test('apply resolves the default workspace from the most recent visible session cwd', async () => {
@@ -72,6 +81,23 @@ test('apply resolves the default workspace from the most recent visible session 
       assert.equal(await exists(join(workspace, '.dsh', 'watch', 'watch.db')), true)
       assert.match(logText(host), /db=.*\.dsh\/watch\/watch\.db/)
       assert.ok(logText(host).includes(join(workspace, '.dsh', 'watch', 'watches.json')))
+    } finally {
+      host.disposeAll()
+    }
+  })
+})
+
+
+test('apply forwards configurable checker limits to the spawned checker', async () => {
+  await withWorkspace(async (workspace) => {
+    const subprocess = makeFakeSubprocess([{ stdout: '{"notify":false}' }])
+    const host = makeHostCtx({ workspace, subprocess })
+    seedDueWatch(join(workspace, '.dsh', 'watch', 'watch.db'))
+    await apply(host.ctx, { limits: { checker: { maxStdoutBytes: 8192, maxStderrBytes: 1024 } } })
+    try {
+      await waitFor(() => subprocess.spawns.length === 1, { timeout: 2_000 })
+      assert.equal(subprocess.spawns[0].stdio.stdout.maxBytes, 8192)
+      assert.equal(subprocess.spawns[0].stdio.stderr.maxBytes, 1024)
     } finally {
       host.disposeAll()
     }

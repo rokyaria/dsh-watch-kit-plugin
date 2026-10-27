@@ -8,6 +8,18 @@
 #       pollIntervalMs: 10000
 #       configFile: /abs/path/watches.json
 #       dbFile: /abs/path/watch.db
+#       limits:                 # 全部可选；下面是默认值
+#         checker:
+#           maxStdoutBytes: 65536
+#           maxStderrBytes: 8192
+#           maxMessageBytes: 8192
+#           maxErrorBytes: 2048
+#         message:
+#           maxItems: 20
+#           maxBytes: 16384
+#         scheduler:
+#           maxConcurrentChecks: 4
+#           runRetentionDays: 7
 - insert:
     - id: watch
       name: dsh-watch-kit-plugin
