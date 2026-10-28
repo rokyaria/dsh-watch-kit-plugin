@@ -1,6 +1,6 @@
 {
   "name": "dsh-watch-kit-plugin",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Minimal SQLite-backed watch scheduler for DeepSeek Harness: polls checkers and wakes the bound session only when a checker returns a notify event.",
   "keywords": [
     "dsh",

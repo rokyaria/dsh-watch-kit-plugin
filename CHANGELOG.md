@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.6 — 2026-10-28
+
+### Changed
+
+- mailbox checker 的 `[MAILBOX]` 通知改为**只给数据 + 处理指示**：账号/folder、`uid | identity | from | subject`、待回列表，以及“按 skill `watch-mailbox` 处理（read → reply/mark）”；不再内联 read/reply/mark 的完整命令（含 env/state/allow/folder 绝对路径）。通知长度约从 1.4KB 降到 0.3KB。
+- `watch-mailbox` skill 新增「命令与参数：按配置组装」：如何定位 `mail.py`、从 `<dshHome>/watch/watches.json` 的 mailbox entry 取 `envFile/stateDir/allowAccountFile/folder/python`、以及命令模板；通知里的 identity 直接使用，不重算。
+
+### Tests
+
+- python 测试新增断言：通知必须指向 skill、且不包含 `mail.py`/`--env-file` 等内联命令；JS 测试断言 skill 覆盖「通知里有什么」「命令与参数」两节。
+
 ## 0.2.5 — 2026-10-28
 
 ### Changed

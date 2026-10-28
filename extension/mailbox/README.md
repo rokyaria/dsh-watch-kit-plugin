@@ -99,7 +99,7 @@ python3 mail.py init   [--notify-existing] --env-file ... --state-dir ... --allo
 python3 mail.py selfcheck --env-file ...
 ```
 
-`check` 只输出一个 JSON 对象；错误也是 JSON（`{"notify":false,"error":"..."}`），不会往 stdout 打人类日志。
+`check` 只输出一个 JSON 对象；错误也是 JSON（`{"notify":false,"error":"..."}`），不会往 stdout 打人类日志。`check` 的 `message` 只给数据（账号、uid、身份、发件人、主题）并指示 agent 按 `watch-mailbox` skill 处理；**命令与参数不内联**，由 agent 按 watch 配置组装（skill 里写了方法）。
 
 ### 主动发信（send）
 
@@ -176,6 +176,8 @@ temp -> acked（reply 成功，或显式 mark）
 ## 7. 严格策略与 skill
 
 随包 `extension/mailbox/skills/watch-mailbox/SKILL.md` 包含默认严格行为。该 skill **不在插件运行时注册**，而是由 `/watch-reload` 落地成 `<dshHome>/skills/watch-mailbox/SKILL.md`（配置里存在 `enabled: true` 的 `preset: "mailbox"` 时）：
+
+通知只带数据 + “按 skill 处理”的指示；agent 按 skill 的「命令与参数：按配置组装」一节，从 `watches.json` 的 mailbox entry 取参数、组装命令。
 
 - **想放宽**（例如 guest 可带附件）：直接编辑 `<dshHome>/skills/watch-mailbox/SKILL.md`；插件不覆盖已存在的文件，`/watch-reload` 会保留你的修改；
 - **停用 mailbox**：该目录整体移入 `<dshHome>/watch/extension/skills/watch-mailbox/`（单份，覆盖旧归档，不保留多份历史）；

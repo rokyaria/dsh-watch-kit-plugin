@@ -21,7 +21,6 @@ import json
 import mimetypes
 import os
 import re
-import shlex
 import smtplib
 import ssl
 import sys
@@ -92,10 +91,6 @@ def clip_utf8(text: str, max_bytes: int) -> str:
         return str(text)
     clipped = raw[: max(0, max_bytes - 16)].decode("utf-8", "ignore")
     return clipped.rstrip() + "\n[truncated]"
-
-
-def quote(value: Any) -> str:
-    return shlex.quote(str(value))
 
 
 def expand_path(value: Any) -> Path:
@@ -531,8 +526,6 @@ def notification_message(
     folder: str,
     new_items: list[dict[str, Any]],
     reminders: list[dict[str, Any]],
-    settings_value: dict[str, Any],
-    script_path: Path,
 ) -> str:
     lines = [f"[MAILBOX] {account} / {folder}: {len(new_items)} 封新信，{len(reminders)} 封待回"]
     if new_items:
@@ -553,24 +546,10 @@ def notification_message(
                 f"{clip_text(record.get('from') or record.get('address') or '?', 64)} | "
                 f"{clip_text(record.get('subject') or '(无主题)', 90)}"
             )
-    python = quote(sys.executable)
-    script = quote(script_path)
-    common = " ".join(
-        [
-            "--env-file", quote(settings_value["env_file"]),
-            "--state-dir", quote(settings_value["state_dir"]),
-            "--allow-account-file", quote(settings_value["allow_file"]),
-            "--folder", quote(folder),
-        ]
-    )
     lines.extend(
         [
             "",
-            f"处理（uid 用上面的编号）:",
-            f"  {python} {script} read --uid <uid> {common}",
-            f"  {python} {script} reply --uid <uid> --body-file <file> {common}",
-            f"  {python} {script} mark --uid <uid> {common}",
-            "reply 成功会自动标记；纯回执/无需回复时用 mark。",
+            "按 skill `watch-mailbox` 处理（read → reply/mark；reply 成功自动标记）。",
         ]
     )
     return clip_utf8("\n".join(lines), MAX_MESSAGE_BYTES)
@@ -663,8 +642,6 @@ def run_check(args: argparse.Namespace) -> int:
                     folder=cfg["folder"],
                     new_items=[item for item in all_items if item in new_items],
                     reminders=[item for item in all_items if item in reminders],
-                    settings_value=cfg,
-                    script_path=Path(__file__).resolve(),
                 )
                 if omitted:
                     message += f"\n（另有 {omitted} 封未列出，运行 list --pending 查看）"

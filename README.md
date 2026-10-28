@@ -119,6 +119,8 @@
 
 `mail.py` 也支持 agent 主动发信（`send`）：**默认不主动发**；只有用户当次明确要求，或与 agent 在会话中约定过场景（一次授权即对约定范围生效）才主动发，具体边界由用户与 agent 自行约定。
 
+checker 的 `[MAILBOX]` 通知只携带**数据**（账号、uid、身份、发件人、主题、待回列表）并指示 agent 按 `watch-mailbox` skill 处理；命令与参数不内联，由 skill 指导按 watch 配置组装。
+
 `watch-kit` skill 由插件运行时注册；`watch-mailbox` **不常驻注册**——当配置里存在 `enabled: true` 的 `preset: "mailbox"` watch 时，`/watch-reload` 会把它落地成 `<dshHome>/skills/watch-mailbox/SKILL.md`（可直接编辑，插件不覆盖）；停用时整目录移入 `<dshHome>/watch/extension/skills/watch-mailbox/`（单份，覆盖旧归档），重新启用自动恢复。随包内容更新见 CHANGELOG，需自行比对决定是否替换。
 
 该 skill 与 `watches.json` / `watch.db` 同口径，都在**用户级 `$DSH_HOME`** 下（默认 `~/.dsh`），不跟随工作区；启用 mailbox 后由 `/watch-reload` 落地。

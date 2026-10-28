@@ -19,10 +19,14 @@ test('shipped SKILL.md files have discoverable frontmatter', async () => {
   assert.match(mailbox, /查看\/回复邮箱/)
   // 主动发信（send）必须出现在 skill 里（回归：CLI 有能力但文档漏写）
   assert.match(mailbox, /## 主动发信（send）/)
-  assert.match(mailbox, /send --to/)
+  assert.match(mailbox, /send\s+--to/)
   assert.match(mailbox, /默认策略：不主动发信/)
   assert.match(mailbox, /一次授权即对约定范围生效/)
   assert.match(mailbox, /给\*\*访客\*\*写信同理/)
+  // 通知只给数据 + 指示按 skill 处理；命令与参数由 skill 指导组装
+  assert.match(mailbox, /## 通知里有什么/)
+  assert.match(mailbox, /## 命令与参数/)
+  assert.match(mailbox, /按 skill `watch-mailbox` 处理/)
   assert.doesNotMatch(mailbox, /whenToUse:/)
 })
 

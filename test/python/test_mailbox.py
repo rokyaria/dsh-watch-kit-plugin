@@ -198,6 +198,16 @@ class MailboxTest(unittest.TestCase):
         code, out, _err = self.check()
         self.assertFalse(self.parse_json(out)["notify"])
 
+    def test_notification_points_to_skill_without_inlined_commands(self):
+        self.add(1)
+        self.check()
+        self.add(2, subject="new thing")
+        code, out, _err = self.check()
+        data = self.parse_json(out)
+        self.assertTrue(data["notify"])
+        self.assertIn("skill `watch-mailbox`", data["message"])
+        self.assertNotIn("mail.py", data["message"])
+        self.assertNotIn("--env-file", data["message"])
 
     def test_notify_existing_first_run(self):
         self.add(1)
