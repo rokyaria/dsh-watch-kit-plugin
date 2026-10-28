@@ -17,7 +17,7 @@ https://github.com/rokyaria/dsh-watch-kit-plugin/blob/main/README.md
 
 先读 README，再按用户的实际目标操作；不要凭空发明命令或沿用 v0.1 的旧命令。
 
-## 当前版本（0.2.8）的对外表面
+## 当前版本（0.3.0）的对外表面
 
 - 配置：`<dshHome>/watch/watches.json`（默认 `~/.dsh/watch/watches.json`）；`configFile`/`dbFile` 可在 profile patch 显式覆盖，相对路径按 `$DSH_HOME` 解析
 - 运行时状态：`<dshHome>/watch/watch.db`（SQLite；**用户级，不跟随工作区**；旧版 `<workspace>/.dsh/watch/` 不自动迁移，见 CHANGELOG 0.2.4）
@@ -25,7 +25,7 @@ https://github.com/rokyaria/dsh-watch-kit-plugin/blob/main/README.md
 - 工具：`watch_runs`（执行/通知/失败统计）、`watch_sessions`（可见会话）
 - checker：argv 直接执行；只认 stdout 的 JSON `{notify, message, error}`；插件不负责去重/重试
 - 扩展：`extension/mailbox/` 提供 mailbox checker；配置里用 `preset: "mailbox"`，不需要写 checker 路径/参数
-- 扩展 skill：mailbox skill **不常驻注册**——存在 `enabled: true` 的 mailbox watch 时，`/watch-reload` 把它落地到 `<dshHome>/skills/watch-mailbox/SKILL.md`（用户可直接编辑，插件不覆盖）；停用时整目录移入 `<dshHome>/watch/extension/skills/watch-mailbox/`，重新启用时只恢复 `SKILL.md`（额外放入该目录的用户文件不会保留，F-03 未修复）
+- 扩展 skill：mailbox skill **不常驻注册**——存在 `enabled: true` 的 mailbox watch 时，`/watch-reload` 把它落地到 `<dshHome>/skills/watch-mailbox/SKILL.md`（用户可直接编辑，插件不覆盖）；邮件状态在 `<stateDir>/<account>.sqlite3`（默认 `<dshHome>/mailbox/<account>.sqlite3`；SQLite，按 UID 记录，保留 31 天）；停用时整目录移入 `<dshHome>/watch/extension/skills/watch-mailbox/`，重新启用时整目录恢复（额外放入该目录的用户文件也会保留）
 
 ## 工作方式
 

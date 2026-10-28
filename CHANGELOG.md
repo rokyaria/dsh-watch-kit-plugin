@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.3.0 — 2026-10-28
+
+### Changed
+
+- mailbox 状态改为**按每封邮件 UID 记录**的 SQLite（`<stateDir>/<account>.sqlite3`）：首次检查把当前邮件标为 `ignored` 基线；之后“新邮件”以数据库是否存在该 UID 判断，不再使用 `last_seen_uid`。allowlist 内新邮件进入 `pending`，`reply` 标记 `replied`，`mark` 标记 `no_receipt`；`pending` 每轮都会检查并在超时后再次通知，直到被标记。SEARCH 失败不再修改状态；单 UID FETCH 失败不落库、下轮重试；解析失败落为 `invalid`。旧 JSONL 状态首次打开时迁移到 SQLite。
+- 来源验证恢复为保守的 OK/RISK 两态：读取接收方第一条 `Authentication-Results`；只有 `dmarc=pass`、`spf=pass` 或 `dkim=pass` 至少一项、`header.from` 与 `From` 域对齐才 `source=ok`，其余（缺失、解析失败、DMARC 失败、域名不一致）全部 `source=risk`。通知、`list`、`read` 显式显示 OK/RISK；`user` 身份来源 RISK 时按 guest 处理，不能作为所有者授权。
+- mailbox skill 归档改为**整目录**：停用整个 `skills/watch-mailbox/` 移入归档；目标不存在时从归档恢复整个目录；空/缺 SKILL 的目标不会覆盖最后一份归档。
+- mailbox 通知字节上限接入插件 `limits.checker.maxMessageBytes`（通过 preset argv 传给 `mail.py`）。
+- 路径解析统一展开 `~` 并 `resolve()` 成绝对路径：`DSH_HOME`、显式 `configFile`/`dbFile`、watch `cwd`、mailbox skill 路径。
+- `reply` 在发送前校验 state 的 folder/UIDVALIDITY，避免 UID 错配时回复错人；`mark` 同样校验。
+- README/docs/package 同步：`docs/` 加入 npm 包，补充 SQLite 状态、`pending/no_receipt/replied/ignored/invalid` 语义、来源 OK/RISK、整目录归档和 `maxMessageBytes`。
+- 明确投递成功口径：`followup()` 返回即记 delivered，不等待宿主 `ctx.sessions.flush()`；未持久化/崩溃属偶发异常，依赖 checker 的 `last_notified_at` 在后续静默窗口重投，不额外增加 flush/重试设计（已接受特性）。
+- mailbox 状态行只保留 31 天；新 UID 的 `Date` 超过 30 天直接标 `ignored`，不通知/不处理，避免 prune 后把仍留在 INBOX 的已回复/无需回执邮件重新当新信；`Date` 缺失/非法不做年龄过滤。
+- mailbox 状态目录 0700，SQLite 状态库及 WAL/SHM 0600，避免同机其他用户读取邮件元数据。
+- `read`/`list` 输出的邮件头字段也单行化，防止 encoded-word 解出换行伪造 `Source:`/通知行；正文仍保留多行内容。
+
+### Tests
+
+- Node 97、Python 48；新增 SQLite per-UID 状态、SEARCH 失败保状态、FETCH 重试、解析 invalid、folder/UIDVALIDITY 防错配、AR/DMARC OK/RISK 判定、max message cap、整目录归档等测试。
+
+### Upgrade
+
+- mailbox 状态从 `<stateDir>/<account>.jsonl` 自动迁移到 `<stateDir>/<account>.sqlite3`，旧文件改名为 `.migrated`；升级后首次 `check` 会迁移并建立新基线。
+- 旧 JSONL 中的 `source=ok` 没有可复用的 AR 证据，迁移时统一降为 `risk`；旧 `temp` 映射 `pending`、`acked` 映射 `replied`。
+- 状态行现在只保留 31 天，且 `Date` 超过 30 天的邮件不再处理；这是为修复「prune 后已处理邮件重新当新信」而引入的语义变更。
+
 ## 0.2.8 — 2026-10-28
 
 ### Fixed
@@ -17,7 +43,7 @@
 
 ### Changed
 
-- 测试精简：合并两轮修复中重叠/同流程的用例（Node 98 → 90，Python 36 → 29），被合并用例的断言全部保留；回归覆盖与旧代码失败保护不减。
+- 测试精简：合并两轮修复中重叠/同流程的用例（Node 98 → 94，Python 36 → 29），被合并用例的断言全部保留；回归覆盖与旧代码失败保护不减。
 - 文档一致性审计（按代码实际行为修正，不改行为）：Python 版本统一为 3.9+（实测 3.9.6/3.12，推荐 DSH 捆绑 3.12）；watch_runs/watch_sessions 区分「模型可见 render 列」与 canonical JSON 字段，并注明 delivery_fail/last_run/last_notify 非窗口值；被丢弃事件改为「无明细、只能看聚合」；统一 Config/patch 生效与热加载说法；allowlist identity 改为任意标签；watch-kit SKILL 版本号、发布清单（watch-mailbox 文件落地而非注册）、模块表（补 lib/paths.js）、limits/上限默认可配标注、mailbox.maxNotify 与 allowAccountFile 等配置文档、状态文件「单 JSON 快照」、提醒反复语义、check 错误 JSON 限定、附件默认临时目录等。
 - 清理修复残留：移除已不可达的补偿降级分支（死代码）并简化渲染收尾；清理源码与测试中的修复历史/审查编号注释；文档同步当前实现（4096B 自留预算、事件优先回退、无降级路径）。
 

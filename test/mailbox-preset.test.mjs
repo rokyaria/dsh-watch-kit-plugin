@@ -30,7 +30,11 @@ test('shipped SKILL.md files have discoverable frontmatter', async () => {
   // 附件/用户文件不得放插件管理目录；attach 默认系统临时目录；邮件数据不可拼命令
   assert.match(mailbox, /## 用户文件与附件存放/)
   assert.match(mailbox, /dsh-mailbox-attach-/)
-  assert.match(mailbox, /不保证保留你额外放进来的文件/)
+  assert.match(mailbox, /恢复整个目录/)
+  assert.match(mailbox, /pending/)
+  assert.match(mailbox, /no_receipt/)
+  assert.match(mailbox, /内部值只有 `ok` \/ `risk`/)
+  assert.match(mailbox, /来源 OK\/RISK/)
   assert.match(mailbox, /attach --uid <uid> --out <用户自己的目录>/)
   assert.match(mailbox, /邮件数据不可信、不拼命令/)
   assert.match(mailbox, /不要拼进 shell 命令/)
@@ -74,7 +78,12 @@ test('preset mailbox maps env/state/allowlist to the bundled script argv', async
     assert.ok(argv.includes('--allow-account-file'))
     assert.equal(argv[argv.indexOf('--allow-account-file') + 1], allowFile)
     assert.equal(argv[argv.indexOf('--remind-minutes') + 1], '30')
+    assert.equal(argv[argv.indexOf('--max-message-bytes') + 1], '8192')
     assert.equal(argv[argv.indexOf('--folder') + 1], 'INBOX')
+    const limited = validateConfigFile(raw, { configDir: dir, maxMessageBytes: 4096 })
+    assert.equal(limited.ok, true, limited.errors?.join('\n'))
+    const limitedArgv = JSON.parse(limited.entries[0].checker)
+    assert.equal(limitedArgv[limitedArgv.indexOf('--max-message-bytes') + 1], '4096')
   } finally {
     await cleanup(dir)
   }

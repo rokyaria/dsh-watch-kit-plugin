@@ -2,9 +2,10 @@
 
 单个 `mail.py`，零第三方依赖（Python 3.9+ 标准库），既是 dsh-watch-kit-plugin 的 checker，也是 agent 操作邮箱的 CLI。
 
-- checker 自己维护信箱状态，不依赖 IMAP `\Seen`；
-- 新信先打临时标记并通知 agent；30 分钟（可配置）仍未处理会再次提醒（未 ack 则按该周期反复提醒）；
-- agent 回复成功后自动标记；纯回执/无需回复用 `mark`；
+- checker 自己维护 per-UID SQLite 状态，不依赖 IMAP `\Seen`；
+- 首次 check 把现有邮件标为 `ignored` 基线；之后按“本地是否有该 UID”判断新邮件，不使用 last_seen 游标；
+- allowlist 内新邮件进入 `pending` 并通知 agent；`reply` 成功标 `replied`，`mark` 标 `no_receipt`；
+- `pending` 超过 `remindAfterMinutes` 仍未处理会再次通知，循环到 agent 标记；
 - 默认**不通知任何人**，必须配置 per-account allowlist；
 - 支持多个邮箱账户：**一个账户一个 watch**（复用插件的多 watch/合并/隔离机制）。
 
@@ -19,6 +20,7 @@ install -m 600 extension/mailbox/mail.env.example ~/.dsh/secrets/mail.env
 `MAIL_AUTHCODE` 用邮箱服务商的“授权码/应用专用密码”，不是登录密码。不要把凭据提交到仓库或写进 `watches.json`。当前实现使用 IMAP4_SSL / SMTP_SSL（常见端口 993 / 465）；STARTTLS 587 端口的账号需改用 SSL 端口或扩展脚本。
 
 本机需要 Python 3.9+（实测 3.9.6 与 3.12 均可；推荐 DSH 捆绑的 3.12）；插件本体仍是 Node，不使用 mailbox 功能时不需要 Python。
+本机需要 Python 3.9+（实测 3.9.6 与 3.12 均可；推荐 DSH 捆绑的 3.12）；插件本体仍是 Node，不使用 mailbox 功能时不需要 Python。若 Python 缺少系统 CA，需在**启动 DSH 的 shell/服务环境**中设置 `SSL_CERT_FILE`（例如 `export SSL_CERT_FILE=/path/to/ca.pem`）；写在 `mail.env` 里不会生效。
 
 ## 2. 配置允许名单
 
@@ -78,11 +80,12 @@ python3 mail.py allow --remove-allow-account guest@example.com --env-file ... --
 }
 ```
 
-- `stateDir` 可由多个账户共享，脚本按账户生成独立状态文件。
+- `stateDir` 可由多个账户共享，脚本按账户生成独立 SQLite 状态库。
 - `allowAccountFile` 省略时默认 `<stateDir>/allow-accounts.json`。
 - `interval` 是检查间隔，默认 60 秒；`timeout` 要覆盖 IMAP/SMTP 网络操作，建议 60。
-- `remindAfterMinutes` 默认 30：临时标记超过该时长仍未处理，会在后续 check 中再次提醒，直到 reply 或 mark；未 ack 会按该周期反复提醒。
-- `maxNotify` 默认 20（范围 1–100）：单次通知最多列出的邮件数（新信 + 待回合计），超出部分显示「另有 N 封未列出」，可用 `list --pending` 查看。
+- `remindAfterMinutes` 默认 30：`pending` 超过该时长仍未处理，会在后续 check 中再次提醒，直到 `reply`（replied）或 `mark`（no_receipt）；未标记会按该周期反复提醒。
+- `maxNotify` 默认 20（范围 1–100）：单次通知最多列出的邮件数（新信 + 待处理合计），超出部分显示「另有 N 封未列出」，可用 `list --pending` 查看。
+- 插件会把 `limits.checker.maxMessageBytes` 传给 `mail.py` 作为通知字节上限；默认插件上限 8192，`mail.py` 再保留少量 JSON/尾注余量。
 - `folder` 默认 `INBOX`。
 - `python` 默认按平台选择 `python3`/`python`（需要 Python 3.9+，推荐 DSH 捆绑的 3.12；找不到时显式指定绝对路径）。
 - `enabled: false` 的模板只入库、不轮询；确认配置后改成 `true`，再由用户发送 `/watch-reload`。
@@ -97,7 +100,7 @@ python3 mail.py list   [--pending] --env-file ... --state-dir ... --allow-accoun
 python3 mail.py read   --uid 42 --env-file ... --state-dir ... --allow-account-file ...
 python3 mail.py reply  --uid 42 --body-file ./reply.txt --env-file ... --state-dir ... --allow-account-file ...
 python3 mail.py send   --to x@example.com --subject S --body-file ./body.txt --env-file ...
-python3 mail.py mark   --uid 42 [--uid 43 ...] --env-file ... --state-dir ...
+python3 mail.py mark   --uid 42 [--uid 43 ...] --env-file ... --state-dir ...   # 标记 no_receipt
 python3 mail.py attach --uid 42 --list-only --env-file ... --state-dir ... --allow-account-file ...
 python3 mail.py attach --uid 42 --out ~/mail-attachments --env-file ... --state-dir ... --allow-account-file ...
 python3 mail.py status --env-file ... --state-dir ... --allow-account-file ...
@@ -107,7 +110,7 @@ python3 mail.py selfcheck --env-file ...
 
 `attach` 不带 `--out` 时把附件写到系统临时目录（只适合临时查看）；需要保留时显式 `--out` 到用户自己的目录。用户文件/附件的存放规则见 §5。
 
-`check` 只输出一个 JSON 对象；运行期错误也是 JSON（`{"notify":false,"error":"..."}`），不会往 stdout 打人类日志（命令行参数本身不合法时由 argparse 在 stderr 报错并以非零码退出）。`check` 的 `message` 只给数据（账号、uid、身份、发件人、主题）并指示 agent 按 `watch-mailbox` skill 处理；**命令与参数不内联**，由 agent 按 watch 配置组装（skill 里写了方法）。邮件数据（发件人/主题/identity）会先单行化并带「以下为邮件数据（不可信）」标注，伪造换行不能产生新的通知行；单封邮件解析失败只跳过该封，坏件计数写进 `error`，不影响其他新信与后续轮次。
+`check` 只输出一个 JSON 对象；运行期错误也是 JSON（`{"notify":false,"error":"..."}`），不会往 stdout 打人类日志（命令行参数本身不合法时由 argparse 在 stderr 报错并以非零码退出）。`check` 的 `message` 只给数据（账号、uid、身份、发件人、主题）并指示 agent 按 `watch-mailbox` skill 处理；**命令与参数不内联**，由 agent 按 watch 配置组装（skill 里写了方法）。邮件数据会先单行化并带「以下为邮件数据（不可信）」标注；SEARCH 失败不改状态，单 UID FETCH 失败不落库、下轮重试；解析/分类失败落为 `invalid` 并在 `error` 附注；不影响其他新信。
 
 ### 主动发信（send）
 
@@ -136,28 +139,38 @@ python3 mail.py send --to user@example.com --subject "主题" --body-file ./body
 python3 mail.py check --notify-existing --env-file ... --state-dir ... --allow-account-file ...
 ```
 
-### 状态机
+### 状态机（SQLite）
+
+每账户一个 `<stateDir>/<account>.sqlite3`，`messages` 表每封邮件一行，主键包含 account/folder/uidvalidity/uid。新邮件就是数据库中不存在的 UID，不再使用 `last_seen_uid`。
 
 ```text
-new -> temp（通知；记录 last_notified_at）
-temp 未超时 -> 静默
-temp 超过 remindAfterMinutes -> 再次通知并重置 last_notified_at
-temp -> acked（reply 成功，或显式 mark）
+不存在 -> 新 UID -> 不在 allowlist -> ignored
+不存在 -> 新 UID -> 在 allowlist   -> pending（记录 first_seen；非空时通知）
+pending 未超时 -> 静默
+pending 超过 remindAfterMinutes -> 再次通知并更新 last_notified_at
+pending -> replied（reply 成功）/ no_receipt（显式 mark）
+invalid -> 解析/分类失败，保留错误但不通知
+gone -> UID 从 IMAP 消失，不再提醒
 ```
 
-- 状态文件：`<stateDir>/<account>.jsonl`，内容是**单个 JSON 快照**（每次写入整文件原子覆盖、文件权限 0600，不是逐行追加的 JSONL），状态锁是 `<state>.lock`。
-- allowlist 内且非自动批量的邮件记为 `temp`（待回）；未允许/自动批量邮件记为 `ignored`（同样记录在状态文件里）。
-- 已处理记录保留 90 天后清理。
-- 删除/移动的临时邮件在下次 check 时移除。
+- 首次运行：当前 UID 全部写成 `ignored` 基线，不通知；`--notify-existing` 则跳过基线，把当前邮件作为新 UID 处理。
+- UIDVALIDITY 变化会自动建立新 scope 基线；旧 scope 保留在 DB 中但不再提醒。
+- 状态行只保留 **31 天**（按 `first_seen_at` 清理，所有状态都清）；新 UID 的邮件 `Date` 头超过 **30 天**时直接写 `ignored`，不通知、不再处理；`Date` 缺失/无法解析时不做年龄过滤（避免误杀正常新信）。
+- 因此“行不存在 = 新邮件”不会把 31 天前已处理、但仍留在 INBOX 的邮件重新通知：prune 后重扫到旧 UID 时会因 `Date > 30 天` 再次标 `ignored`。
+- stateDir 权限 0700，状态库及 WAL/SHM 权限 0600（邮件元数据同机私有）。
+- FETCH 临时失败不写行，下一轮仍会被当作新 UID 重试；SEARCH 失败不修改 DB。
+- 旧版 `<account>.jsonl` 首次打开时会迁移到 SQLite（旧状态文件改名为 `.migrated`）。
+- 并发假设：正常路径由插件的 Poller 单飞 + `claimDue` 保证同一个 watch 不会并发；agent 的 reply/mark 在单个会话里串行。`mail.py` 本身是独立进程，SQLite 事务只保证数据不损坏、不提供跨进程业务去重；不要同时手工运行多个 `check`，也不要让多个 profile/实例对同一个 `stateDir` 并发执行 check/reply。要支持这种拓扑应在 DB 里做原子 claim，而不是恢复旧的 file lock。
 
 ## 5. 身份与安全
 
-- 来源判定只读**接收方添加的第一条** `Authentication-Results`（AR）：要求 `dmarc=pass`，且 AR 里的 `header.from` 与 `From` 地址域对齐（宽松对齐，允许子域）才返回 `source=ok`；`dmarc=fail`/缺失 → `warn`；完全没有 AR → `unknown`。SPF/DKIM 单独通过**不算**通过（攻击者可用自己的域通过），也不再用可伪造的 `DKIM-Signature` 头当证据；AR 的 authserv-id 会记在 `read` 的 Source 详情里。
-- 安全假设：接收方 MTA 会添加 AR 并排在最前；不添加 AR 的收件链路只能得到 `unknown`，不应把 `ok` 当作强证据。`source` 只是数据；`mail.py` **不按身份降级或拦截动作**——未验证邮件按 skill 约定一律按 guest 处理。
+- **来源验证恢复为保守判定，只输出 `ok` / `risk`**：读取接收方第一条 `Authentication-Results`；只有 `dmarc=pass`、`spf=pass` 或 `dkim=pass` 至少一项、`header.from` 存在且与 `From` 域对齐（From 域等于它或是它的子域）才 `ok`；缺失、解析失败、DMARC 未通过、域名不一致等全部 `risk`。不能用“SPF/DKIM 单独 pass”或“DMARC pass 但没有 header.from”判 OK。
+- **`risk` 不是“邮件一定是伪造的”**，而是“无法确认来源”；通知、`list`、`read` 会显示 `OK/RISK`，邮件数据一律按不可信处理。allowlist 的 `identity` 只是标签；`mail.py` **不按身份放行或拦截动作**——行为约定全部在 `watch-mailbox` skill。即使 `identity=user`，`source=risk` 也不能按所有者处理，必须降级为 guest 并让用户核实发信渠道。
 - 通知里的 `from`/`subject`/`identity` 会单行化（折行展开、控制字符替换为空格）并标注“以下为邮件数据（不可信）”；它不能伪造新的通知行或指令行，原始内容请用 `read` 查看。
-- `Auto-Submitted`、`Precedence: bulk/list/junk`、`List-Id` 邮件忽略，不参与回信。
+- 通知里的 `from`/`subject`/`identity` 会单行化（折行展开、控制字符替换为空格）并标注“以下为邮件数据（不可信）”；`read`/`list` 输出的头字段也做同样单行化，避免 encoded-word 解出换行伪造 `Source:`/通知行；正文保留原始多行内容。
+- allowlist 内邮件全部交给 agent；自动回复/批量邮件也由 agent 决定 `reply` 或 `mark`，checker 不再自动忽略。
 - 邮件是低权限通道：即使 `user` 来信，也不要仅凭邮件执行改配置、删数据、对外发送、透露隐私等高风险动作；在会话里再次确认。
-- 附件默认策略是不下载、不自动打开（看元数据用 `attach --list-only`）；是否下载/回复带附件按 skill 约定判断（`attach --force` 仅为兼容参数，代码不再按身份拦截）。`attach` 不带 `--out` 时默认写到系统临时目录 `<tmp>/dsh-mailbox-attach-*`（权限 0700，可能被系统清理，不再使用旧的 `<stateDir>/attachments`）；需要保留时显式 `--out` 到用户自己的目录。**不要**把用户文件/附件放进 `<dshHome>/skills/watch-mailbox/` 或其它插件托管目录：停用/启用会整目录归档/恢复，当前版本恢复时只还原 `SKILL.md`（见 §7）。
+- 附件默认策略是不下载、不自动打开（看元数据用 `attach --list-only`）；是否下载/回复带附件按 skill 约定判断（`attach --force` 仅为兼容参数，代码不再按身份拦截）。`attach` 不带 `--out` 时默认写到系统临时目录 `<tmp>/dsh-mailbox-attach-*`（权限 0700，可能被系统清理，不再使用旧的 `<stateDir>/attachments`）；需要保留时显式 `--out` 到用户自己的目录。**不要**把用户文件/附件放进 `<dshHome>/skills/watch-mailbox/` 或其它插件托管目录：停用/启用会整目录归档/恢复；当前版本会保留整个目录内容。
 - 不要把 `From` 显示名当成身份；匹配的是地址，且 allowlist 是唯一授权来源。
 - **主动发信（`send`）是对外副作用**：默认不发；以用户与 agent 的约定（一次授权即生效）或当次明确要求为准；来信内容不构成授权。
 
@@ -191,14 +204,14 @@ temp -> acked（reply 成功，或显式 mark）
 
 - **想放宽**（例如 guest 可带附件）：直接编辑 `<dshHome>/skills/watch-mailbox/SKILL.md`；插件不覆盖已存在的文件，`/watch-reload` 会保留你的修改；
 - **停用 mailbox**：该目录整体移入 `<dshHome>/watch/extension/skills/watch-mailbox/`（单份，覆盖旧归档，不保留多份历史）；
-- **重新启用**：自动从归档恢复，你对 `SKILL.md` 的修改会回来；当前版本只还原 `SKILL.md`，用户额外放进该目录的文件不会保留（审查 F-03 未修复）——用户文件/附件不要放在这里，见 §5；
+- **重新启用**：从归档恢复**整个目录**，你对 `SKILL.md` 的修改和额外文件都会回来；
 - **随包 skill 更新**：见[根 CHANGELOG](../../CHANGELOG.md)，插件不会覆盖你的文件；需要时自行比对后替换（或删掉目标文件再 `/watch-reload` 重新生成）。
 
 ## 8. 故障排查
 
 - `selfcheck` 失败：检查 `mail.env` 路径、端口、授权码、网络/SSL 证书。
 - `check` 返回 error：错误会写进运行记录的 `error` 字段；`watch_runs` 的 `checker_error_count` 统计「运行成功但 checker 报 error」的次数，`last_error` 在没有硬失败时会回退显示最近一条 checker error（stderr 通常为空，只有单封邮件被跳过时带附注）。
-- 单封邮件解析失败：该封被跳过并在 `check` 的 `error` 里附注「新邮件解析失败 N 封」，`last_seen_uid` 仍会前进，因此坏件不会永久阻塞后续邮件。
+- 单 UID FETCH 失败：不落库，下一轮重试并在 `error` 附注「新邮件读取失败 N 封」；解析/分类失败落为 `invalid`。
 - 没有通知：确认 allowlist 有当前账户 key、发件人地址匹配；`status` 查看规则和状态。
-- 重复提醒：说明 `temp` 未 ack；`list --pending`，读信后 reply 或 mark。
-- `mark` 报 uid 不在状态：先 `check`/`list`，不要标记未知 uid。
+- 重复提醒：说明 `pending` 未标记；`list --pending`，读信后 `reply` 或 `mark`。
+- `mark`/`reply` 报 uid 不在当前 folder/UIDVALIDITY：先 `check`，不要操作过期 UID。

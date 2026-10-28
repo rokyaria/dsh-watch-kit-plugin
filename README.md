@@ -31,7 +31,7 @@
 |---|---|
 | 普通 Web 用户，想少折腾 | 方式 A：Web 侧边栏「插件」页 |
 | 已开 Creator 预设 / 希望 agent 代装 | 方式 B：`plugin_manager` |
-| 插件页不可用、也没有 `plugin_manager` | 先切 Creator 再按 B；仍不行请 profile 维护者按方式 C 处理 |
+| 插件页不可用、也没有 `plugin_manager` | 没有受管 profile → 直接方式 C；有受管 profile、只是插件页坏了 → 切 Creator 按 B |
 
 ### 方式 A：Web 侧边栏「插件」页（普通用户首选）
 
@@ -40,7 +40,7 @@
 3. 已启用 HMR 的 profile 会立即重组；否则页面提示 `restart-required` 时重启 DSH。
 4. 升级：先移除再安装新版本；pnpm 要求批准依赖构建脚本时按页面提示单独确认。
 
-> 「插件」页要求当前 Host 有受管 profile；页面不存在或显示不可用时，用方式 B（切 Creator）或请 profile 维护者按方式 C 处理。
+> 「插件」页要求当前 Host 有受管 profile。若页面不存在/显示不可用是因为**没有受管 profile**，Creator 里的 `plugin_manager` 也会被禁用，只能走方式 C；只有已有受管 profile、仅插件页不可用时才建议切 Creator 走方式 B。
 
 ### 方式 B：Creator 模式 + `plugin_manager`（agent 驱动）
 
@@ -99,7 +99,7 @@ Web 默认 agent preset 是 `standard`，其中 `tool-plugin-manager` 默认禁�
         deliveryTimeoutMs: 30000    # 1000–600000（单 target 投递超时）
 ```
 
-这些值只影响插件运行参数，不改变 `watches.json` 的 checker 契约；改完同样需要 DSH 重新加载本插件才生效（profile 启用热加载时会自动重组，否则需重启/重新安装）。
+这些值只影响插件运行参数，不改变 `watches.json` 的 checker 契约；mailbox preset 也会把 `limits.checker.maxMessageBytes` 传给 `mail.py`，用于裁剪通知。改完同样需要 DSH 重新加载本插件才生效（profile 启用热加载时会自动重组，否则需重启/重新安装）。
 
 ## 快速开始
 
@@ -125,7 +125,7 @@ Web 默认 agent preset 是 `standard`，其中 `tool-plugin-manager` 默认禁�
 
 ## 随包 mailbox checker（可选）
 
-仓库 `extension/mailbox/` 里附带一个零第三方依赖的 Python mailbox checker：`mail.py` 同时是 checker 和 agent 的邮箱 CLI，支持多账户、allowlist（身份标签可自定义，随包默认约定 `user`/`guest`）、临时标记、未处理提醒（默认 30 分钟、未 ack 会反复提醒）、回复自动标记、主动发信（`send`）。使用 `preset: "mailbox"` 时不需要配置 checker 路径或参数：
+仓库 `extension/mailbox/` 里附带一个零第三方依赖的 Python mailbox checker：`mail.py` 同时是 checker 和 agent 的邮箱 CLI，支持多账户、allowlist（身份标签可自定义，随包默认约定 `user`/`guest`）、per-UID SQLite 状态、未处理提醒（默认 30 分钟循环）、`reply` 自动标记 `replied`、`mark` 标记 `no_receipt`、主动发信（`send`）。使用 `preset: "mailbox"` 时不需要配置 checker 路径或参数：
 
 ```json
 {
@@ -146,15 +146,15 @@ Web 默认 agent preset 是 `standard`，其中 `tool-plugin-manager` 默认禁�
 }
 ```
 
-示例里 `enabled: false` 是模板，启用时改成 `true` 再让用户执行 `/watch-reload`。`mailbox.allowAccountFile` 省略时默认 `<stateDir>/allow-accounts.json`；`remindAfterMinutes` 默认 30 分钟（未 ack 会按该周期反复提醒，受 `maxNotify` 截断）；`maxNotify` 默认 20、范围 1–100，限制单次通知最多列出的邮件数（新信 + 待回合计，超出显示「另有 N 封未列出」）；`folder` 默认 `INBOX`，`python` 默认按平台取 `python3`/`python`。
+示例里 `enabled: false` 是模板，启用时改成 `true` 再让用户执行 `/watch-reload`。`mailbox.allowAccountFile` 省略时默认 `<stateDir>/allow-accounts.json`；`remindAfterMinutes` 默认 30 分钟（`pending` 未标记会按该周期反复提醒，受 `maxNotify` 截断）；`maxNotify` 默认 20、范围 1–100，限制单次通知最多列出的邮件数（新信 + 待处理合计，超出显示「另有 N 封未列出」）；`folder` 默认 `INBOX`，`python` 默认按平台取 `python3`/`python`。
 
-默认所有人都不通知，必须用 per-account allowlist 显式允许；不能把授权码写进 `watches.json`。allowlist 里的 `identity` 是**任意标签**（默认约定 `user` = 所有者、`guest` = 外部），`mail.py` 只传递标签与 DMARC/`Authentication-Results` 判定结果，身份对应的行为全部由 `watch-mailbox` skill 定义。`mailbox.python` 需要 **Python 3.9+**（实测 3.9.6 与 3.12 均可；推荐写 DSH 自带 Python 3.12 的绝对路径，macOS 自带的 `/usr/bin/python3` 也可用）。完整说明、模板和严格行为见 [extension/mailbox/README.md](https://github.com/rokyaria/dsh-watch-kit-plugin/blob/main/extension/mailbox/README.md)。
+默认所有人都不通知，必须用 per-account allowlist 显式允许；不能把授权码写进 `watches.json`。allowlist 里的 `identity` 是**任意标签**（默认约定 `user` = 所有者、`guest` = 外部），`mail.py` 只传递标签和来源验证结果；来源验证内部值只有 `ok` / `risk`，通知显示 `来源 OK/RISK`、`read` 显示 `Source: OK/RISK`；判定规则：第一条 `Authentication-Results` 同时满足 `dmarc=pass`、`spf=pass` 或 `dkim=pass` 至少一项、`header.from` 存在且与 `From` 域对齐才 OK，其余全部 RISK；来源 RISK 的 `user` 也按 `guest` 处理，身份对应的行为全部由 `watch-mailbox` skill 定义。邮件状态按账户保存为 `<dshHome>/mailbox/<account>.sqlite3`：首次 check 把现有邮件标为 `ignored` 基线，之后按“本地是否有该 UID”判断新邮件；名单内新邮件进入 `pending` 并通知，`reply` 标 `replied`，`mark` 标 `no_receipt`，`pending` 每轮都会检查并在超时后再次通知，不再依赖 `last_seen_uid`。只保留 31 天状态行；`Date` 超过 30 天的邮件不再处理并标 `ignored`，所以 prune 不会把仍留在 INBOX 的已处理邮件重新当新信；`Date` 缺失/非法时不做年龄过滤。状态目录 0700、状态库/WAL/SHM 0600。`mailbox.python` 需要 **Python 3.9+**（实测 3.9.6 与 3.12 均可；推荐写 DSH 自带 Python 3.12 的绝对路径，macOS 自带的 `/usr/bin/python3` 也可用）。完整说明、模板和严格行为见 [extension/mailbox/README.md](https://github.com/rokyaria/dsh-watch-kit-plugin/blob/main/extension/mailbox/README.md)。
 
 `mail.py` 也支持 agent 主动发信（`send`）：**默认不主动发**；只有用户当次明确要求，或与 agent 在会话中约定过场景（一次授权即对约定范围生效）才主动发，具体边界由用户与 agent 自行约定。
 
-checker 的 `[MAILBOX]` 通知只携带**数据**（账号、uid、身份、发件人、主题、待回列表）并指示 agent 按 `watch-mailbox` skill 处理；命令与参数不内联，由 skill 指导按 watch 配置组装；发件人/主题/identity 等不可信字段会单行化并标注「以下为邮件数据（不可信）」，伪造换行不能产生新的通知行。`mail.py attach` 下载附件时默认写到系统临时目录（`<tmp>/dsh-mailbox-attach-*`，0700，可能被清理），需要保留请显式 `--out <用户自己的目录>`；用户文件/邮箱附件不要放进 `<dshHome>/skills/watch-mailbox/` 等插件管理目录。
+checker 的 `[MAILBOX]` 通知只携带**数据**（账号、uid、身份、发件人、主题、待处理列表）并指示 agent 按 `watch-mailbox` skill 处理；命令与参数不内联，由 skill 指导按 watch 配置组装；发件人/主题/identity 等不可信字段会单行化并标注「以下为邮件数据（不可信）」，伪造换行不能产生新的通知行。`mail.py attach` 下载附件时默认写到系统临时目录（`<tmp>/dsh-mailbox-attach-*`，0700，可能被清理），需要保留请显式 `--out <用户自己的目录>`；用户文件/邮箱附件不要放进 `<dshHome>/skills/watch-mailbox/` 等插件管理目录。
 
-`watch-kit` skill 由插件运行时注册；`watch-mailbox` **不常驻注册**——当配置里存在 `enabled: true` 的 `preset: "mailbox"` watch 时，`/watch-reload` 会把它落地成 `<dshHome>/skills/watch-mailbox/SKILL.md`（可直接编辑，插件不覆盖）；停用时整目录移入 `<dshHome>/watch/extension/skills/watch-mailbox/`（单份，覆盖旧归档），重新启用时只恢复 `SKILL.md`（用户额外放进该目录的文件不会保留，F-03 未修复）——用户文件/邮箱附件不要放进这个插件管理目录。随包内容更新见 CHANGELOG，需自行比对决定是否替换。
+`watch-kit` skill 由插件运行时注册；`watch-mailbox` **不常驻注册**——当配置里存在 `enabled: true` 的 `preset: "mailbox"` watch 时，`/watch-reload` 会把它落地成 `<dshHome>/skills/watch-mailbox/SKILL.md`（可直接编辑，插件不覆盖）；停用时整目录移入 `<dshHome>/watch/extension/skills/watch-mailbox/`（单份，覆盖旧归档），重新启用时**恢复整个目录**（用户额外放进该目录的文件也会保留）。随包内容更新见 CHANGELOG，需自行比对决定是否替换。
 
 该 skill 与 `watches.json` / `watch.db` 同口径，都在**用户级 `$DSH_HOME`** 下（默认 `~/.dsh`），不跟随工作区；启用 mailbox 后由 `/watch-reload` 落地。
 
@@ -254,6 +254,7 @@ canonical JSON 是 camelCase：`{ hours, since, watches: [{ id, intervalSec, inv
 - 轮询：默认每 10 秒一次（`pollIntervalMs`，最小 1000）；启动后立即轮询一次；上一轮未结束时跳过本轮（单飞）。
 - 调度：`now - last_run_at > interval` 才运行；到期 watch 在 `BEGIN IMMEDIATE` 事务里被 claim，多进程共享同一个 DB 也不会重复执行；单轮并发上限默认 4（`limits.scheduler.maxConcurrentChecks` 可配）。
 - 投递超时：单个 target 的 `resolveAgent`/`followup` 超过 `limits.scheduler.deliveryTimeoutMs`（默认 30000ms）即按投递失败计数并继续其他 target；卸载/热重载时最多再等约 5 秒 in-flight 轮次，然后关闭 DB。
+- 投递成功口径（已知取舍）：`followup()` 返回即记为 delivered，**不等待 `ctx.sessions.flush()`**。followup 只把消息放入宿主内存 inbox；若进程在持久化前崩溃（偶发异常），本轮 DB 仍记成功，但 checker 的 `last_notified_at` 周期提醒会在下个静默窗口重新投递。这是有意设计，不额外增加 flush/重试/持久化耦合。
 - 无去重、无自动重试：是否"只在变化时提醒"由 checker 自己判断（例如把状态写进自己的文件，无事时输出 `notify:false`）；投递失败只计数，靠下一次成功的投递做一次性补偿。
 - DSH 必须在运行：插件随 DSH 启停，不依赖系统 cron，也没有 OS 通知。
 - 无沙箱：checker 以你的用户身份运行，权限与普通 shell 相同。

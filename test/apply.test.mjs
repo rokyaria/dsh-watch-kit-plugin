@@ -6,12 +6,12 @@
  */
 
 import assert from 'node:assert/strict'
-import { stat } from 'node:fs/promises'
+import { mkdir, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import test from 'node:test'
 import { apply, Config, inject, name } from '../lib/index.js'
 import { WatchDB } from '../lib/db.js'
-import { cleanup, makeFakeSubprocess, makeHostCtx, makeTmp, rawQuery, rawRun, waitFor, watchEntry } from './helpers/harness.mjs'
+import { cleanup, makeFakeSubprocess, makeHostCtx, makeTmp, rawGet, rawQuery, rawRun, waitFor, watchEntry, writeJsonFile } from './helpers/harness.mjs'
 
 const DEFAULT_POLL_MS = 10_000
 const DEFAULT_LIMITS = {
@@ -108,6 +108,40 @@ test('apply forwards configurable checker limits to the spawned checker', async 
       await waitFor(() => subprocess.spawns.length === 1, { timeout: 2_000 })
       assert.equal(subprocess.spawns[0].stdio.stdout.maxBytes, 8192)
       assert.equal(subprocess.spawns[0].stdio.stderr.maxBytes, 1024)
+    } finally {
+      host.disposeAll()
+    }
+  })
+})
+
+test('apply forwards limits.checker.maxMessageBytes into mailbox preset argv on /watch-reload', async () => {
+  await withDshHome(async (home) => {
+    const { configFile, dbFile } = defaultPaths(home)
+    const envFile = join(home, 'mail.env')
+    const stateDir = join(home, 'mail-state')
+    const allowFile = join(home, 'allow.json')
+    await writeFile(envFile, 'MAIL_ADDRESS=agent@example.com\nMAIL_AUTHCODE=secret\n', 'utf8')
+    await mkdir(stateDir, { recursive: true })
+    await writeJsonFile(allowFile, { 'agent@example.com': [] })
+    await writeJsonFile(configFile, {
+      watches: [
+        {
+          id: 'mailbox',
+          preset: 'mailbox',
+          enabled: true,
+          mailbox: { envFile, stateDir, allowAccountFile: allowFile },
+          interval: 60,
+          timeout: 60,
+        },
+      ],
+    })
+    const host = makeHostCtx({ subprocess: makeFakeSubprocess([]) })
+    await apply(host.ctx, { limits: { checker: { maxMessageBytes: 4096 } } })
+    try {
+      const result = await host.state.commands[0].handler({ agent: { id: 'session-1' } })
+      assert.equal(result.kind, 'success', result.text)
+      const checker = JSON.parse(rawGet(dbFile, 'SELECT checker FROM watches WHERE id = ?', 'mailbox').checker)
+      assert.equal(checker[checker.indexOf('--max-message-bytes') + 1], '4096')
     } finally {
       host.disposeAll()
     }

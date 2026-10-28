@@ -4,16 +4,17 @@
  *   落地：<dshHome>/skills/watch-mailbox/SKILL.md
  *   归档：<dshHome>/watch/extension/skills/watch-mailbox/
  *
- * 覆盖：materialize / kept（不覆盖用户改动）/ restored / archived（单份覆盖）/ absent、
- * 路径布局、dshHome 解析，以及插件 apply + /watch-reload 的端到端接线。
+ * 覆盖：materialize / kept（不覆盖用户改动）/ restored（整目录）/ archived（整目录）/
+ * absent、路径解析（含 ~）、空目标不覆盖归档，以及插件 apply + /watch-reload 的端到端接线。
  */
 
 import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { apply } from '../lib/index.js'
-import { resolveDshHome } from '../lib/paths.js'
+import { resolveDshHome, resolveWatchPaths } from '../lib/paths.js'
 import { resolveMailboxSkillPaths, syncMailboxSkill } from '../lib/mailbox-skill.js'
 import { cleanup, makeFakeSubprocess, makeHostCtx, makeTmp, writeJsonFile } from './helpers/harness.mjs'
 
@@ -45,14 +46,29 @@ test('路径布局：落地在 <dshHome>/skills，归档在 <dshHome>/watch/exte
   assert.equal(paths.archiveDir, '/tmp/home/watch/extension/skills/watch-mailbox')
 })
 
-test('resolveDshHome：显式参数 > DSH_HOME > ~/.dsh', () => {
+test('resolveDshHome：显式参数 > DSH_HOME > ~/.dsh，并展开 ~/解析绝对路径', () => {
   const previous = process.env.DSH_HOME
   try {
     process.env.DSH_HOME = '/tmp/env-home'
     assert.equal(resolveDshHome('/tmp/explicit'), '/tmp/explicit')
     assert.equal(resolveDshHome(), '/tmp/env-home')
+    assert.equal(resolveDshHome('~/alt-dsh'), join(homedir(), 'alt-dsh'))
     delete process.env.DSH_HOME
     assert.match(resolveDshHome(), /\.dsh$/)
+  } finally {
+    if (previous === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previous
+  }
+})
+
+test('resolveWatchPaths：DSH_HOME 含 ~ 时解析为绝对路径，不产生字面 ~ 目录', () => {
+  const previous = process.env.DSH_HOME
+  try {
+    process.env.DSH_HOME = '~/alt-home'
+    const paths = resolveWatchPaths()
+    assert.equal(paths.dshHome, join(homedir(), 'alt-home'))
+    assert.equal(paths.configFile, join(homedir(), 'alt-home', 'watch', 'watches.json'))
+    assert.equal(paths.dbFile, join(homedir(), 'alt-home', 'watch', 'watch.db'))
   } finally {
     if (previous === undefined) delete process.env.DSH_HOME
     else process.env.DSH_HOME = previous
@@ -89,14 +105,16 @@ test('enabled：目标缺 SKILL.md 但目录存在 → 只补 SKILL.md，保留�
   })
 })
 
-test('enabled：目标不存在但归档有历史副本 → 恢复（restored）', async () => {
+test('enabled：目标不存在但归档有历史副本 → 整个目录恢复（restored）', async () => {
   await withDshHome(async (home) => {
     const { archiveDir } = skillPaths(home)
     mkdirSync(archiveDir, { recursive: true })
     writeFileSync(archiveFile(home), CUSTOM)
+    writeFileSync(join(archiveDir, 'notes.txt'), 'user-archive-file')
     const result = syncMailboxSkill({ enabled: true, dshHome: home, sourcePath: makeSource(home) })
     assert.equal(result.status, 'restored')
     assert.equal(readFileSync(targetFile(home), 'utf8'), CUSTOM)
+    assert.equal(readFileSync(join(skillPaths(home).targetDir, 'notes.txt'), 'utf8'), 'user-archive-file')
     assert.equal(existsSync(archiveDir), false, '恢复后归档清空')
   })
 })
@@ -122,6 +140,21 @@ test('disabled：归档同一 skill 只保留一份（新的覆盖旧的）', as
     const result = syncMailboxSkill({ enabled: false, dshHome: home })
     assert.equal(result.status, 'archived')
     assert.equal(readFileSync(archiveFile(home), 'utf8'), CUSTOM)
+  })
+})
+
+test('disabled：目标没有 SKILL.md 时不会用空目录覆盖最后一份归档', async () => {
+  await withDshHome(async (home) => {
+    const paths = skillPaths(home)
+    mkdirSync(paths.archiveDir, { recursive: true })
+    writeFileSync(archiveFile(home), 'last-user-edit\n')
+    mkdirSync(paths.targetDir, { recursive: true })
+    writeFileSync(join(paths.targetDir, 'extra.txt'), 'target-extra')
+    const result = syncMailboxSkill({ enabled: false, dshHome: home })
+    assert.equal(result.status, 'archived')
+    assert.equal(readFileSync(archiveFile(home), 'utf8'), 'last-user-edit\n')
+    assert.equal(readFileSync(join(paths.archiveDir, 'extra.txt'), 'utf8'), 'target-extra')
+    assert.equal(existsSync(paths.targetDir), false)
   })
 })
 

@@ -51,7 +51,7 @@ runs 记账：delivered / last_notify_at / 投递失败补偿
 
 依赖注入：`inject = ['commands','tools','skills','sessionController','subprocess','timer']`。`skills` 用于注册 `watch-kit`；mailbox skill 由文件落地（`lib/mailbox-skill.js`），扩展代码/模板在 `extension/`。
 
-`limits` 是插件级运行上限，通过 apply 注入 Poller/checker/render/cleanup：`checker.maxStdoutBytes`、`maxStderrBytes`、`maxMessageBytes`、`maxErrorBytes`；`message.maxItems`、`maxBytes`；`scheduler.maxConcurrentChecks`、`runRetentionDays`、`deliveryTimeoutMs`（单 target 投递超时，默认 30s，1000–600000ms）。各项默认值见根 README「运行上限」，所有值都有上下限护栏。
+`limits` 是插件级运行上限，通过 apply 注入 Poller/checker/render/cleanup：`checker.maxStdoutBytes`、`maxStderrBytes`、`maxMessageBytes`、`maxErrorBytes`；`message.maxItems`、`maxBytes`；`scheduler.maxConcurrentChecks`、`runRetentionDays`、`deliveryTimeoutMs`（单 target 投递超时，默认 30s，1000–600000ms）。`checker.maxMessageBytes` 同时传给 mailbox preset 的 `mail.py --max-message-bytes`。各项默认值见根 README「运行上限」，所有值都有上下限护栏。
 
 ## 3. 运行时存储
 
@@ -185,6 +185,7 @@ JSON 字段：
 - 渲染上限默认 20 个事件；`limits.message.maxBytes` 默认 16KB（可配）是**用户可见上限**，渲染内部实际布局/消息上限 = `maxBytes + RENDER_HEADROOM_BYTES`（4096B 自留预算），因此 text 最多比 `maxBytes` 大 4096B。放不下的后段丢弃；空间允许时追加“另有 N 个事件未列出”。
 - 渲染器按**真实字节**优先保证补偿段完整，返回 `{ text, includedIds, truncated, renderedCompensationIds, compensatedIds, deferredCompensationIds }`：items 只用剩余预算，放不下就丢后段而不是截断补偿段；贪心接受保证最终 text 一定在 effective 上限内（没有降级/硬截断分支）；「另有 N 个事件未列出」仅在空间允许时追加。**事件优先回退**（仅在 effective 上限仍放不下时触发）：候选事件连同自身补偿放不下、而「标题 + 完整补偿段」自身放得下时，先把该 watch 自己的补偿放入 deferred 再试——成功则保事件、该补偿延后到下一轮（`deferredCompensationIds`），失败计数保留；仍放不下才丢弃该事件（补偿完整性优先不变）。deferred 对后续候选与最终渲染持续生效。不变式：`renderedCompensationIds ⊆ compensatedIds ⊆ includedIds`，`deferredCompensationIds ⊆ includedIds` 且与 `compensatedIds` 互斥、无重复。**只有 `includedIds` 中的 watch 才算投递成功**：标记 runs.delivered、更新 `last_notify_at`。**失败计数只对 `compensatedIds` 覆盖（补偿行写出或被汇总行覆盖）的 watch 清零**，被丢弃/未表示的保留供后续补偿（`watch_runs` 的 `deliveryFailCount` 可看到未结清次数）。被丢弃的事件保持 `delivered=0`，由 checker 下一轮决定是否再次提醒。
 - 投递失败（resolveAgent/followup 异常，或超过 `limits.scheduler.deliveryTimeoutMs`）：只对实际包含在消息里的 watch 增加 `delivery_fail_count/streak`、记录首次失败时间和最后错误；不重试、不重放。
+- **投递成功口径（已接受特性）**：`followup()` 返回即记 delivered，故意不等待 `ctx.sessions.flush()`。followup 只入宿主内存 inbox；如果持久化前进程崩溃（偶发异常），本轮仍记为成功，但 mailbox/checker 的 `last_notified_at` 周期提醒会在下个静默窗口重新投递。不为此增加 flush 等待、重试或持久化耦合。
 - 该 watch 下一次**实际投递成功**时，消息末尾补偿一次失败统计；被补偿段表示（写出补偿行或被「另有 N 个」汇总行覆盖）的失败记录清零，未表示的保留。错误截断 128 字符，最多 10 行。
 - 成功记账是一个事务；失败计数也是事务；`recordRun` 或单个 target 记账失败只记日志，不中断整轮。
 - 这些不变量有专门的回归测试：超 20 条 / 超过 `maxBytes + 4096B` 时 omitted watch 必须保持未投递；DB 写失败/记账失败不能导致整轮静默丢失。
@@ -233,10 +234,10 @@ pnpm install
 node --test test/*.test.mjs
 ```
 
-- Node：10 个测试文件、94 个测试；Python：`python3 -m unittest discover -s test/python -v`，29 个 fake IMAP/SMTP 测试（也可 `pnpm test:mailbox`）。
+- Node：10 个测试文件、97 个测试；Python：`python3 -m unittest discover -s test/python -v`，48 个 fake IMAP/SMTP 测试（也可 `pnpm test:mailbox`）。
 - 使用真实临时 `node:sqlite` DB + fake host（commands/tools/skills/sessionController/subprocess/timer/logger），不依赖网络或真实会话；涉及 `/watch-reload` 的测试把 `DSH_HOME` 指向临时目录。
 - 覆盖重点：schema/claim 事务/多连接不重复 claim、软删除/复活、JSON 契约/失败分类/字节上限、合并消息/补偿/128 字符/10 行、超限截断记账、4096B 自留预算与事件优先、单条失败错误隔离、reload 原子性/target 绑定、watch_runs 窗口/聚合/checker error 可见性、watch_sessions signal/排序/50 条、async apply/默认路径/有界 dispose、投递超时自愈、真实 DB 端到端。
-- mailbox 扩展回归：未知 charset/单封坏件隔离、通知注入单行化、Authentication-Results/DMARC 判定、折行 Subject/References 的 reply。
+- mailbox 扩展回归：per-UID SQLite 状态、SEARCH 失败不改状态、FETCH 失败重试、解析失败落 invalid、基线 ignored、pending 提醒、reply/mark 状态流转、reply folder/UIDVALIDITY 防错配、AR/DMARC OK/RISK 判定、未知 charset/通知注入单行化、折行 Subject/References 的 reply、通知字节上限。
 - 修改行为时先加/改测试；测试不应弱化“只标记实际投递的 watch”“失败不重试”等不变量。
 - 随包 mailbox 的状态机/allowlist/身份/回复测试在 `test/python/`，运行需要 Python 3.9+（实测 3.9.6 与 3.12.14 全绿），不依赖第三方库。
 
@@ -245,8 +246,8 @@ node --test test/*.test.mjs
 发布前检查：
 
 1. `pnpm install --frozen-lockfile`
-2. `node --test test/*.test.mjs`（必须全绿）
-3. `pnpm pack` 检查 tarball 文件清单（lib/locale/icon/cordis.patch.yml/README/CHANGELOG/LICENSE + extension/skills）
+2. 用 DSH 自带 Node 的绝对路径跑 `node --test test/*.test.mjs`（本机 PATH 可能没有 `node`；示例：`~/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/node/bin/node --test test/*.test.mjs`，必须全绿）
+3. `pnpm pack` 检查 tarball 文件清单（lib/docs/locale/icon/cordis.patch.yml/README/CHANGELOG/LICENSE + extension/skills）
 4. 用 DSH 的 `plugin_manager install_bundle`（Creator 模式；或用 Web 侧边栏「插件」页，见根 README「安装」）从仓库绝对路径安装，确认 `application:"applied"`、`warnings:[]`、version 正确
 5. 确认 Config schema 为 4 个顶层键（`pollIntervalMs`/`configFile`/`dbFile`/`limits`，`limits` 下 `checker`/`message`/`scheduler`）、`watch_runs`/`watch_sessions` live、`watch-kit` skill 已由运行时注册、`watch-mailbox` 已落地为 `<dshHome>/skills/watch-mailbox/SKILL.md`（不常驻注册）、无旧工具/旧 skill
 6. `remove_bundle` 后 profile 文件恢复一致
@@ -254,6 +255,7 @@ node --test test/*.test.mjs
 8. 更新版本、CHANGELOG、tag，并推送 main/tag
 
 v0.1 → v0.2.1 是破坏性重写：旧管理命令、watch 目录、校验流程、skill、随包 docs/assets/examples 均不再读取；旧用户需把 watch 改写成 `watches.json`，执行一次 `/watch-reload`。
+v0.2.8 → v0.3.0：mailbox 状态从 JSONL 自动迁移到 per-UID SQLite；旧 `temp`/`acked` 映射为 `pending`/`replied`，旧 `source=ok` 降为 `risk`；状态行只保留 31 天，`Date` 超过 30 天的邮件不再处理。来源验证改为 OK/RISK 两态；mailbox skill 改为整目录归档/恢复。
 
 ## 12. 随包 mailbox 扩展（v0.2.2+）
 
@@ -278,12 +280,13 @@ v0.1 → v0.2.1 是破坏性重写：旧管理命令、watch 目录、校验流�
 }
 ```
 
-- 一个账户一个 watch；`stateDir`/allowlist 可共享，脚本按 `MAIL_ADDRESS` 生成独立状态文件。
-- 默认 allowlist 为空 = 不通知；格式 `{account: [{address, identity}]}`，支持 `*`。`mailbox.allowAccountFile` 省略时默认 `<stateDir>/allow-accounts.json`；`remindAfterMinutes` 默认 30；`maxNotify`（默认 20，1–100）限制单次通知列出的邮件数（新信 + 待回合计，超出显示「另有 N 封未列出」）。
-- 状态机：`temp` → 超过 `remindAfterMinutes` 再次提醒（未 ack 则按周期反复提醒）→ `acked`；reply 成功自动标记。
+- 一个账户一个 watch；`stateDir`/allowlist 可共享，脚本按 `MAIL_ADDRESS` 生成独立 SQLite 状态库（`<stateDir>/<account>.sqlite3`）。
+- 默认 allowlist 为空 = 不通知；格式 `{account: [{address, identity}]}`，支持 `*`。`mailbox.allowAccountFile` 省略时默认 `<stateDir>/allow-accounts.json`；`remindAfterMinutes` 默认 30；`maxNotify`（默认 20，1–100）限制单次通知列出的邮件数（新信 + 待处理合计，超出显示「另有 N 封未列出」）。
+- 状态机：`pending` → 超过 `remindAfterMinutes` 再次提醒 → `replied`（reply）或 `no_receipt`（mark）；`ignored` 为名单外，`invalid` 为解析失败。新邮件按“SQLite 中是否存在该 UID”判断，不使用 `last_seen_uid`。
+- 状态库：`<stateDir>/<account>.sqlite3`，`scopes` 缓存 `(account, folder, uidvalidity, baseline_done)`，`messages` 每 UID 一行（status、last_notified_at、replied_at、no_receipt_at、from/subject/identity/source、last_error）；`source` 只有 `ok`/`risk` 两态（保守 AR/DMARC 判定）；WAL + busy_timeout，网络请求不持有 DB 事务。状态行只保留 31 天；`Date` 超过 30 天的邮件不处理并标 `ignored`（缺失/非法不年龄过滤）；stateDir 0700，库/WAL/SHM 0600。
 - 多账户靠多个 watch entry 实现，复用现有 poller/合并/隔离，不是单 checker 轮询多邮箱。
 - `mail.py` 需要本机 Python 3.9+（实测 3.9.6 与 3.12.14；推荐 DSH 捆绑的 3.12）；插件本体不用 mailbox 时不需要 Python。
-- 随包 skill：`watch-kit` 由运行时注册（提醒 agent 读 README）；`watch-mailbox` 不常驻注册，由 `/watch-reload` 落地到 `<dshHome>/skills/watch-mailbox/SKILL.md`（存在 enabled 的 mailbox watch 时），停用移入 `<dshHome>/watch/extension/skills/watch-mailbox/`（单份，覆盖旧归档），重新启用时**只恢复 `SKILL.md`**（用户额外放进该目录的文件不会保留，F-03 未修复）；插件不覆盖用户修改。两个 `SKILL.md` 带标准 `name`/`description` frontmatter；自动发现依赖 `description`，触发词写在那里。
+- 随包 skill：`watch-kit` 由运行时注册（提醒 agent 读 README）；`watch-mailbox` 不常驻注册，由 `/watch-reload` 落地到 `<dshHome>/skills/watch-mailbox/SKILL.md`（存在 enabled 的 mailbox watch 时），停用移入 `<dshHome>/watch/extension/skills/watch-mailbox/`（单份，覆盖旧归档），重新启用时**恢复整个目录**；插件不覆盖用户修改。两个 `SKILL.md` 带标准 `name`/`description` frontmatter；自动发现依赖 `description`，触发词写在那里。
 
 ## 13. 已知取舍与后续方向
 
