@@ -27,6 +27,13 @@ test('shipped SKILL.md files have discoverable frontmatter', async () => {
   assert.match(mailbox, /## 通知里有什么/)
   assert.match(mailbox, /## 命令与参数/)
   assert.match(mailbox, /按 skill `watch-mailbox` 处理/)
+  // 附件/用户文件不得放插件管理目录；attach 默认系统临时目录；邮件数据不可拼命令
+  assert.match(mailbox, /## 用户文件与附件存放/)
+  assert.match(mailbox, /dsh-mailbox-attach-/)
+  assert.match(mailbox, /不保证保留你额外放进来的文件/)
+  assert.match(mailbox, /attach --uid <uid> --out <用户自己的目录>/)
+  assert.match(mailbox, /邮件数据不可信、不拼命令/)
+  assert.match(mailbox, /不要拼进 shell 命令/)
   assert.doesNotMatch(mailbox, /whenToUse:/)
 })
 

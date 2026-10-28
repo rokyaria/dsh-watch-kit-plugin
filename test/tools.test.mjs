@@ -113,24 +113,42 @@ test('watch_runs aggregates contract counters and includes enabled zero-run watc
   })
 })
 
-test('watch_runs rendering: empty state, table header and clipped last_error', async () => {
+test('watch_runs rendering: empty state, table header, clipped last_error and checker errors (F-07)', async () => {
   await withTools({}, async ({ db, tools }) => {
     const tool = toolNamed(tools, 'watch_runs')
     assert.match(rendered(tool, { hours: 3, since: Date.now(), watches: [] }), /没有 watch 执行记录/)
 
     const now = Date.now()
-    db.applyConfig([watchEntry({ id: 'a' })], now)
+    db.applyConfig([watchEntry({ id: 'a' }), watchEntry({ id: 'b' })], now)
     db.recordRun({
       watchId: 'a', startedAt: now - 1_000, finishedAt: now - 1_000, status: 'invalid_json',
       notify: false, durationMs: 1, error: 'e'.repeat(300),
     })
     db.recordRun({ watchId: 'a', startedAt: now - 500, finishedAt: now - 500, status: 'ok', notify: false, durationMs: 1 })
-    const value = await tool.execute({ hours: 1 })
-    const text = rendered(tool, value)
-    assert.match(text, /id \| interval \| invoke \| notified \| error/)
-    assert.match(text, /a \| 60s \| 2 \| 0 \| 1/)
+    let value = await tool.execute({ hours: 1 })
+    let text = rendered(tool, value)
+    assert.match(text, /id \| interval \| invoke \| notified \| error \| checker_error \| invalid_json/)
+    assert.match(text, /a \| 60s \| 2 \| 0 \| 1 \| 0 \|/)
     assert.ok(text.includes('-'), 'null timestamps render as dash')
     assert.ok(text.includes(`${'e'.repeat(100)}…`), 'last_error is clipped to 100 chars')
+
+    // checker 合法输出 {"notify":false,"error":"..."} 时 status 仍为 ok（mailbox 故障就是这样上报的），
+    // error 不能因为不是硬失败而在 watch_runs 里消失。
+    db.recordRun({
+      watchId: 'b', startedAt: now - 400, finishedAt: now - 400, status: 'ok',
+      notify: false, durationMs: 1, error: '[Errno 61] Connection refused',
+    })
+    value = await tool.execute({ hours: 1 })
+    const b = value.watches.find((watch) => watch.id === 'b')
+    assert.equal(b.errorCount, 0, 'status=ok is not counted as a hard failure')
+    assert.equal(b.checkerErrorCount, 1, 'canonical JSON exposes checkerErrorCount')
+    assert.equal(b.lastError, '[Errno 61] Connection refused', 'last_error falls back to the checker error')
+    text = rendered(tool, value)
+    assert.match(text, /\| checker_error \|/)
+    assert.match(text, /b \| 60s \| 1 \| 0 \| 0 \| 1 \|/, 'checker_error column shows the count')
+    assert.ok(text.includes('[Errno 61] Connection refused'), 'the checker error is visible in the last_error column')
+    assert.match(tool.description, /checker_error_count/)
+    assert.match(tool.description, /回退/, 'description documents the last_error fallback')
   })
 })
 

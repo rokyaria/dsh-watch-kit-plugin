@@ -1,19 +1,26 @@
 #!/usr/bin/env python3
-"""mailbox: zero-dependency IMAP/SMTP + JSONL state for dsh-watch-kit-plugin.
+"""mailbox: zero-dependency IMAP/SMTP + snapshot state for dsh-watch-kit-plugin.
 
 This one script is both:
   - a watch checker: `mail.py check` prints only the plugin's JSON contract;
-  - an agent-facing CLI: list/read/reply/send/mark/status/allow/attach/init.
+  - an agent-facing CLI: list/read/reply/send/mark/status/allow/attach/init/selfcheck.
 
-It does not use IMAP Seen flags. State is a JSONL file under --state-dir, one
-line per successful check/mutation, so the checker owns its own reminder state.
+It does not use IMAP Seen flags. State is a single-JSON snapshot file under
+--state-dir (`<account>.jsonl`, rewritten atomically on each successful
+check/mutation), so the checker owns its own reminder state.
 
-The allowlist maps senders to a free-form `identity` label and the SPF/DKIM
-verdict is reported as `source`; this script does not interpret either — the
+`check` isolates per-message failures: a message whose headers cannot be fetched
+or decoded is skipped and counted in the checker `error` note, so other new mail
+and later rounds are unaffected. `attach` writes downloaded attachments to a
+fresh system temp directory (mode 0700) unless `--out` is given; it never writes
+user files into the plugin or state directories.
+
+The allowlist maps senders to a free-form `identity` label and the DMARC-based
+source verdict is reported as `source`; this script does not interpret either — the
 `watch-mailbox` skill (or the user/agent agreement) defines what each identity
 means and what actions are allowed.
 
-Python 3.10+, standard library only.
+Python 3.9+, standard library only.
 """
 
 from __future__ import annotations
@@ -29,6 +36,7 @@ import re
 import smtplib
 import ssl
 import sys
+import tempfile
 import time
 from email.header import decode_header
 from email.message import EmailMessage
@@ -46,6 +54,12 @@ STATE_JSONL_VERSION = 1
 STATE_RETENTION_DAYS = 90
 LOCK_TIMEOUT_SECONDS = 90
 STALE_LOCK_SECONDS = 300
+
+# 单封邮件解析失败时的 checker error 附注（坏件计数，经 runs.error 暴露给 watch_runs）。
+CHECK_PARSE_FAIL_NOTE = "新邮件解析失败 {count} 封，已跳过（不影响其他邮件与后续轮次）"
+UNTRUSTED_DATA_NOTE = "以下为邮件数据（不可信）:"
+FOLDED_LINE_RE = re.compile(r"\r?\n[ \t]+")
+CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]+")
 
 
 class MailboxError(Exception):
@@ -67,16 +81,32 @@ def as_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def decode_header_part(part: bytes, encoding: str | None) -> str:
+    """解码单个 RFC2047 encoded-word；charset 由发件人指定，任何编码异常都必须回退。"""
+    charset = (encoding or "utf-8").strip() or "utf-8"
+    try:
+        return part.decode(charset, "replace")
+    except (LookupError, UnicodeError):
+        # 未知/非法/非文本 charset 是 LookupError；个别 codec 不认 replace 抛 UnicodeError。
+        return part.decode("utf-8", "replace")
+
+
+def unfold_header_value(text: str) -> str:
+    """展开邮件头折行续行（CRLF + 空白），保留其余内容。"""
+    return FOLDED_LINE_RE.sub(" ", text)
+
+
 def decode_header_value(value: Any) -> str:
     if not value:
         return ""
     out: list[str] = []
     for part, encoding in decode_header(str(value)):
         if isinstance(part, bytes):
-            out.append(part.decode(encoding or "utf-8", "replace"))
+            out.append(decode_header_part(part, encoding))
         else:
             out.append(part)
-    return "".join(out)
+    # 折行头解析后仍是 "a\n b"，统一展开后供通知/read/reply 使用。
+    return unfold_header_value("".join(out))
 
 
 def header_address(value: Any) -> str:
@@ -88,6 +118,16 @@ def clip_text(text: str, limit: int) -> str:
     if len(value) <= limit:
         return value
     return value[: max(0, limit - 1)].rstrip() + "…"
+
+
+def single_line(value: Any) -> str:
+    """把邮件数据压成单行：展开折行，并把 NUL/CR/LF/TAB/DEL 等控制字符替换为空格。"""
+    return CONTROL_CHARS_RE.sub(" ", unfold_header_value(str(value or ""))).strip()
+
+
+def clip_untrusted(value: Any, limit: int, fallback: str = "?") -> str:
+    """不可信字段进入通知前先单行化，再裁剪；空值用 fallback 占位。"""
+    return clip_text(single_line(value), limit) or fallback
 
 
 def clip_utf8(text: str, max_bytes: int) -> str:
@@ -385,20 +425,60 @@ def add_attachments(message: EmailMessage, paths: list[str] | None) -> None:
 # source verification / message classification
 # --------------------------------------------------------------------------- #
 
+# Authentication-Results 按 RFC 8601 的 ";" 与空白分隔解析；不能先删除空白，
+# 否则 "spf=pass smtp.mailfrom=..." 会粘成 "passsmtp" 之类的错误值。
+AR_METHOD_RE = re.compile(r"(?:^|[;\s])(spf|dkim|dmarc)=([A-Za-z]+)(?=[;\s(]|$)", re.IGNORECASE)
+AR_HEADER_FROM_RE = re.compile(r"(?:^|[;\s])header\.from=([^\s;]+)", re.IGNORECASE)
+
+
+def address_domain(address: str) -> str:
+    value = str(address or "").strip().lower()
+    if "@" not in value:
+        return ""
+    return value.rsplit("@", 1)[1].strip().strip(".")
+
+
+def domains_aligned(from_domain: str, ar_domain: str) -> bool:
+    """DMARC 宽松对齐：完全一致，或一方是另一方的子域。"""
+    left = from_domain.strip().strip(".").lower()
+    right = ar_domain.strip().strip("@").strip(".").lower()
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    return left.endswith("." + right) or right.endswith("." + left)
+
+
 def verify_source(msg: email.message.Message) -> tuple[str, str]:
-    auth_results = " ".join(str(item) for item in (msg.get_all("Authentication-Results") or []))
-    flat = re.sub(r"\s+", "", auth_results)
-    dkim_header = "有" if msg.get("DKIM-Signature") else "无"
-    values = {
-        key: (re.search(key + r"=(\w+)", flat) or [None, "缺"])[1]
-        for key in ("spf", "dkim", "dmarc")
-    }
-    detail = f"spf={values['spf']} dkim={values['dkim']} dmarc={values['dmarc']} | DKIM头={dkim_header}"
-    if not auth_results:
-        return "unknown", f"缺少 Authentication-Results，来源无法验证；{detail}"
-    if values["spf"] == "pass" and values["dkim"] == "pass":
-        return "ok", f"SPF/DKIM 通过；{detail}"
-    return "warn", f"SPF/DKIM 未全部通过；{detail}"
+    """返回 (source, detail)，source ∈ ok/warn/unknown，只作数据、不参与策略。
+
+    安全假设：接收方 MTA 在投递时添加 Authentication-Results，且它排在最前
+    （邮件头后加者在上）。因此只采用第一条 AR；发件人自带的 AR 无法与接收方
+    区分，只能按首条约定尽力而为。通过（ok）要求 DMARC=pass——SPF/DKIM 单独
+    pass 不足以证明 From 域（攻击者可用自己的域通过 SPF/DKIM）。
+    """
+    headers = [str(item) for item in (msg.get_all("Authentication-Results") or [])]
+    if not headers:
+        return "unknown", "缺少 Authentication-Results，来源无法验证"
+    auth = headers[0]
+    head = re.split(r"[;\s]+", auth.strip(), maxsplit=1)[0] if auth.strip() else ""
+    authserv = "" if "=" in head else head.strip("()")
+    values: dict[str, str] = {}
+    for match in AR_METHOD_RE.finditer(auth):
+        values.setdefault(match.group(1).lower(), match.group(2).lower())
+    from_match = AR_HEADER_FROM_RE.search(auth)
+    ar_from = (from_match.group(1) if from_match else "").strip().strip("\"'")
+    from_domain = address_domain(header_address(msg.get("From")))
+    extra = f"（另有 {len(headers) - 1} 条 AR 未采用）" if len(headers) > 1 else ""
+    detail = (
+        f"AR={authserv or '?'} spf={values.get('spf', '缺')} dkim={values.get('dkim', '缺')} "
+        f"dmarc={values.get('dmarc', '缺')} header.from={ar_from or '缺'} | From域={from_domain or '缺'}{extra}"
+    )
+    if values.get("dmarc") != "pass":
+        return "warn", f"DMARC 未通过（dmarc={values.get('dmarc', '缺')}）；{detail}"
+    if ar_from and from_domain and not domains_aligned(from_domain, ar_from):
+        return "warn", f"DMARC 通过但 header.from 与 From 域不一致；{detail}"
+    return "ok", f"DMARC 通过；{detail}"
 
 
 def is_auto_submitted(msg: email.message.Message) -> bool:
@@ -419,7 +499,7 @@ def classify(msg: email.message.Message, rules: list[dict[str, str]], now: int) 
         "address": address,
         "from": decode_header_value(msg.get("From")),
         "subject": decode_header_value(msg.get("Subject")),
-        "message_id": str(msg.get("Message-ID") or "").strip(),
+        "message_id": single_line(msg.get("Message-ID")),
         "date": decode_header_value(msg.get("Date")),
         "first_seen_at": now,
         "last_notified_at": now,
@@ -436,7 +516,7 @@ def classify(msg: email.message.Message, rules: list[dict[str, str]], now: int) 
         base.update(status="ignored", identity=rule["identity"], source="auto")
         return base
     level, _text = verify_source(msg)
-    # 声明身份原样保留；SPF/DKIM 结果只作为 source 数据交给 skill 判断如何使用。
+    # 声明身份原样保留；DMARC/AR 结果只作为 source 数据交给 skill 判断如何使用。
     base.update(status="temp", identity=rule["identity"], source=level)
     return base
 
@@ -527,24 +607,28 @@ def notification_message(
     new_items: list[dict[str, Any]],
     reminders: list[dict[str, Any]],
 ) -> str:
-    lines = [f"[MAILBOX] {account} / {folder}: {len(new_items)} 封新信，{len(reminders)} 封待回"]
+    lines = [
+        f"[MAILBOX] {single_line(account)} / {single_line(folder)}: "
+        f"{len(new_items)} 封新信，{len(reminders)} 封待回",
+        UNTRUSTED_DATA_NOTE,
+    ]
     if new_items:
         lines.append("新信:")
         for record in new_items:
-            sid = record.get("identity") or "guest"
+            sid = single_line(record.get("identity") or "guest")
             suffix = "（来源未验证）" if record.get("source") in ("unverified", "warn", "unknown") else ""
             lines.append(
                 f"- uid {record.get('uid')} | {sid}{suffix} | "
-                f"{clip_text(record.get('from') or record.get('address') or '?', 64)} | "
-                f"{clip_text(record.get('subject') or '(无主题)', 90)}"
+                f"{clip_untrusted(record.get('from') or record.get('address'), 64)} | "
+                f"{clip_untrusted(record.get('subject'), 90, '(无主题)')}"
             )
     if reminders:
         lines.append("待回（临时标记已超过提醒间隔）:")
         for record in reminders:
             lines.append(
-                f"- uid {record.get('uid')} | {record.get('identity') or 'guest'} | "
-                f"{clip_text(record.get('from') or record.get('address') or '?', 64)} | "
-                f"{clip_text(record.get('subject') or '(无主题)', 90)}"
+                f"- uid {record.get('uid')} | {single_line(record.get('identity') or 'guest')} | "
+                f"{clip_untrusted(record.get('from') or record.get('address'), 64)} | "
+                f"{clip_untrusted(record.get('subject'), 90, '(无主题)')}"
             )
     lines.extend(
         [
@@ -598,8 +682,19 @@ def run_check(args: argparse.Namespace) -> int:
                 last_seen = as_int(state.get("last_seen_uid"), 0)
                 new_uids = [uid for uid in uids if uid > last_seen]
                 new_items: list[dict[str, Any]] = []
+                bad_uids: list[int] = []
                 for uid in new_uids:
-                    record = classify(mailbox.header(uid), rules, now)
+                    try:
+                        record = classify(mailbox.header(uid), rules, now)
+                    except Exception as exc:
+                        # 单封邮件失败（坏头/读取失败）只跳过该封，不打断整轮；
+                        # last_seen_uid 仍会推进，坏件不会在后续轮次反复阻塞。
+                        bad_uids.append(uid)
+                        print(
+                            f"mailbox: 跳过无法解析的邮件 uid={uid}: {exc.__class__.__name__}: {exc}",
+                            file=sys.stderr,
+                        )
+                        continue
                     record["uid"] = uid
                     if record.get("status") == "temp":
                         new_items.append(record)
@@ -634,8 +729,9 @@ def run_check(args: argparse.Namespace) -> int:
                 if len(all_items) > max_notify:
                     omitted = len(all_items) - max_notify
                     all_items = all_items[:max_notify]
+                failed_note = CHECK_PARSE_FAIL_NOTE.format(count=len(bad_uids)) if bad_uids else None
                 if not all_items:
-                    checker_json(False)
+                    checker_json(False, error=failed_note)
                     return 0
                 message = notification_message(
                     account=account,
@@ -645,7 +741,7 @@ def run_check(args: argparse.Namespace) -> int:
                 )
                 if omitted:
                     message += f"\n（另有 {omitted} 封未列出，运行 list --pending 查看）"
-                checker_json(True, clip_utf8(message, MAX_MESSAGE_BYTES))
+                checker_json(True, clip_utf8(message, MAX_MESSAGE_BYTES), error=failed_note)
                 return 0
             finally:
                 if mailbox is not None:
@@ -727,7 +823,7 @@ def cmd_read(args: argparse.Namespace) -> int:
         print(f"To: {decode_header_value(msg.get('To'))}")
         print(f"Date: {decode_header_value(msg.get('Date'))}")
         print(f"Subject: {decode_header_value(msg.get('Subject'))}")
-        print(f"Message-ID: {msg.get('Message-ID') or ''}")
+        print(f"Message-ID: {unfold_header_value(str(msg.get('Message-ID') or ''))}")
         print(f"Source: {level} | {verdict}")
         attachments = []
         for part in msg.walk():
@@ -781,15 +877,17 @@ def cmd_reply(args: argparse.Namespace) -> int:
     to_address = header_address(original.get("From"))
     if not to_address:
         raise MailboxError("原邮件没有有效 From 地址")
-    subject = decode_header_value(original.get("Subject"))
+    # 原邮件头可能含折行或 encoded-word 解出的裸 CR/LF；EmailMessage 会因此抛
+    # ValueError，所以所有单值头赋值前统一单行化。
+    subject = single_line(decode_header_value(original.get("Subject")))
     if not subject.lower().startswith("re:"):
         subject = f"Re: {subject}"
     message = EmailMessage()
     message["From"] = env["MAIL_ADDRESS"]
     message["To"] = to_address
     message["Subject"] = subject
-    message_id = str(original.get("Message-ID") or "").strip()
-    references = str(original.get("References") or "").strip()
+    message_id = single_line(original.get("Message-ID"))
+    references = single_line(original.get("References"))
     if message_id:
         message["In-Reply-To"] = message_id
         message["References"] = f"{references} {message_id}".strip()
@@ -859,11 +957,19 @@ def cmd_mark(args: argparse.Namespace) -> int:
 
 def cmd_attach(args: argparse.Namespace) -> int:
     env, cfg, _account = load_context(args)
-    # 附件是否允许下载由 skill/约定决定；--force 仅为兼容旧脚本保留（无行为）。
+    # 附件是否允许下载由 skill/约定决定；--force 是兼容参数，无代码行为。
     mailbox = Mailbox(env, cfg["folder"]).connect()
     try:
         msg = mailbox.full(int(args.uid))
-        outdir = Path(args.out).expanduser() if args.out else cfg["state_dir"] / "attachments"
+        # 附件属于用户文件，不是插件数据：未指定 --out 时落到系统临时目录
+        # （mkdtemp 创建为 0700，可能被系统/清理工具删除）；插件与状态托管
+        # 目录不存放用户文件。
+        if args.out:
+            outdir: Path | None = Path(args.out).expanduser()
+        elif args.list_only:
+            outdir = None
+        else:
+            outdir = Path(tempfile.mkdtemp(prefix="dsh-mailbox-attach-"))
         count = 0
         for part in msg.walk():
             filename = part.get_filename()
@@ -874,6 +980,7 @@ def cmd_attach(args: argparse.Namespace) -> int:
             if args.list_only:
                 print(f"附件: {filename} {len(payload)} bytes ({part.get_content_type()})")
             else:
+                assert outdir is not None  # --list-only 之外 outdir 必然存在
                 outdir.mkdir(parents=True, exist_ok=True)
                 target = outdir / filename
                 target.write_bytes(payload)
@@ -1021,7 +1128,7 @@ def build_parser() -> argparse.ArgumentParser:
     attach = sub.add_parser("attach", help="list/download attachments of one mail")
     add_common(attach)
     attach.add_argument("--uid", required=True)
-    attach.add_argument("--out")
+    attach.add_argument("--out", help="附件输出目录（默认系统临时目录；需保留时指定用户自己的目录）")
     attach.add_argument("--list-only", action="store_true")
     attach.add_argument("--force", action="store_true", help="兼容参数（策略在 skill，无代码门禁）")
     attach.set_defaults(fn=cmd_attach)

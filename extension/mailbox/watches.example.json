@@ -9,6 +9,7 @@
         "stateDir": "/absolute/path/to/.dsh/mailbox",
         "allowAccountFile": "/absolute/path/to/allow-accounts.json",
         "remindAfterMinutes": 30,
+        "maxNotify": 20,
         "folder": "INBOX",
         "python": "python3"
       },

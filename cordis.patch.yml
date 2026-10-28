@@ -17,10 +17,11 @@
 #           maxErrorBytes: 2048
 #         message:
 #           maxItems: 20
-#           maxBytes: 16384
+#           maxBytes: 16384          # 实际渲染上限 = 配置 + 4096B（自留预算）
 #         scheduler:
 #           maxConcurrentChecks: 4
 #           runRetentionDays: 7
+#           deliveryTimeoutMs: 30000   # 单个 target 投递超时（1000–600000）
 - insert:
     - id: watch
       name: dsh-watch-kit-plugin

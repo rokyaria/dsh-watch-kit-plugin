@@ -168,9 +168,9 @@ test('recordRun stores the run and markRunsDelivered flips delivered', async () 
   })
 })
 
-test('delivery failure counters: count/streak/first-fail-once/error, notified timestamp', async () => {
-  await withDb(async (db) => {
-    db.applyConfig([watchEntry({ id: 'a' }), watchEntry({ id: 'b' })], NOW)
+test('delivery failure counters and success clearing: count/streak/first-fail/error, notified timestamp, clearFailureIds (F-12)', async () => {
+  await withDb(async (db, file) => {
+    db.applyConfig([watchEntry({ id: 'a' }), watchEntry({ id: 'b' }), watchEntry({ id: 'c' })], NOW)
     db.recordDeliveryFailure(['a'], 'first error', NOW + 1_000)
     let a = db.getWatch('a')
     assert.equal(a.deliveryFailCount, 1)
@@ -188,6 +188,38 @@ test('delivery failure counters: count/streak/first-fail-once/error, notified ti
     db.markWatchesNotified(['a'], NOW + 3_000)
     assert.equal(db.getWatch('a').lastNotifyAt, NOW + 3_000)
     assert.equal(db.getWatch('b').deliveryFailCount, 0, 'other watches are untouched')
+
+    // recordDeliverySuccess 只对 clearFailureIds 清失败计数；runs.delivered/last_notify 仍按 watchIds。
+    db.recordDeliveryFailure(['a', 'b', 'c'], 'gateway/internal', NOW - 1_000)
+    const addRun = (watchId) => db.recordRun({
+      watchId, startedAt: NOW, finishedAt: NOW, status: 'ok', notify: true, message: 'event', durationMs: 1,
+    })
+    const runA = addRun('a')
+    const runB = addRun('b')
+    const runC = addRun('c')
+
+    // 只清 a：b/c 的失败计数保留（消息未完整表示它们的补偿段，事后仍可追溯）。
+    db.recordDeliverySuccess([runA, runB, runC], ['a', 'b', 'c'], NOW, ['a'])
+    assert.equal(db.getWatch('a').deliveryFailStreak, 0)
+    assert.equal(db.getWatch('a').deliveryFailCount, 0)
+    assert.equal(db.getWatch('b').deliveryFailStreak, 1, 'b is not in clearFailureIds')
+    assert.equal(db.getWatch('b').deliveryFailCount, 1)
+    assert.equal(db.getWatch('b').lastDeliveryError, 'gateway/internal')
+    assert.equal(db.getWatch('c').deliveryFailStreak, 1)
+    // runs.delivered / last_notify_at 仍按 watchIds（不清失败计数不影响正常记账）。
+    assert.equal(rawQuery(file, 'SELECT delivered FROM runs').every((row) => row.delivered === 1), true)
+    for (const id of ['a', 'b', 'c']) assert.equal(db.getWatch(id).lastNotifyAt, NOW)
+
+    // 显式空数组：一个都不清。
+    db.recordDeliverySuccess([], ['a'], NOW, [])
+    assert.equal(db.getWatch('b').deliveryFailStreak, 1)
+    assert.equal(db.getWatch('c').deliveryFailStreak, 1)
+
+    // 旧 3 参数调用仍默认清 watchIds（向后兼容）。
+    db.recordDeliverySuccess([], ['b', 'c'], NOW + 1)
+    assert.equal(db.getWatch('b').deliveryFailStreak, 0)
+    assert.equal(db.getWatch('c').deliveryFailStreak, 0)
+    assert.equal(db.getWatch('b').lastNotifyAt, NOW + 1)
   })
 })
 
@@ -292,6 +324,46 @@ test('runsReport last_error only reflects non-ok runs inside the requested windo
     const wide = db.runsReport(NOW - 6 * 3_600_000)
     assert.equal(wide[0].invokeCount, 2)
     assert.equal(wide[0].lastError, 'ancient failure', 'inside the window the non-ok run is reported')
+  })
+})
+
+test('runsReport counts ok-run checker errors and lets hard failures win last_error (F-07)', async () => {
+  // checker 合法输出 {"notify":false,"error":"..."} 时 run 仍记 status='ok'（如 mailbox 的
+  // IMAP/认证故障），error 不能因为不是硬失败而在 watch_runs 里消失。
+  await withDb(async (db) => {
+    db.applyConfig([watchEntry({ id: 'a' }), watchEntry({ id: 'b' }), watchEntry({ id: 'c' })], NOW)
+
+    // 场景 1：ok + checker error 计入 checkerErrorCount；窗口内无硬失败时 last_error 回退到它。
+    const add = (watchId, offset, extra = {}) =>
+      db.recordRun({ watchId, startedAt: NOW - offset, finishedAt: NOW - offset, status: 'ok', notify: false, durationMs: 1, ...extra })
+    add('a', 3_000, { error: 'older checker error' })
+    add('a', 2_000, { error: '[Errno 61] Connection refused' })
+    add('a', 1_000)
+    add('b', 1_500)
+    add('b', 5 * 3_600_000, { error: 'stale checker error' }) // 窗口外
+
+    let report = db.runsReport(NOW - 3_600_000)
+    const a = report.find((item) => item.id === 'a')
+    assert.equal(a.errorCount, 0, 'status=ok is not a hard failure')
+    assert.equal(a.checkerErrorCount, 2, 'every ok run carrying a checker error is counted')
+    assert.equal(a.lastError, '[Errno 61] Connection refused', 'last_error falls back to the latest checker error')
+
+    const b = report.find((item) => item.id === 'b')
+    assert.equal(b.checkerErrorCount, 0, 'checker error outside the window is not counted')
+    assert.equal(b.lastError, null, 'checker error outside the window must not leak into last_error')
+
+    // 场景 2：窗口内存在硬失败时，更新的 checker error 不能盖过它。
+    const addMixed = (offset, status, extra = {}) =>
+      db.recordRun({ watchId: 'c', startedAt: NOW - offset, finishedAt: NOW - offset, status, notify: false, durationMs: 1, ...extra })
+    addMixed(2_000, 'ok', { error: 'IMAP timeout' })
+    addMixed(3_000, 'spawn_error', { error: 'ENOENT mail.py' }) // 更早的硬失败
+    addMixed(500, 'ok', { error: 'still IMAP timeout' }) // 更新的 checker error 不应盖过硬失败
+
+    report = db.runsReport(NOW - 3_600_000)
+    const c = report.find((item) => item.id === 'c')
+    assert.equal(c.errorCount, 1)
+    assert.equal(c.checkerErrorCount, 2, 'checker errors stay independently counted')
+    assert.equal(c.lastError, 'ENOENT mail.py', 'a hard failure wins over any newer checker error')
   })
 })
 

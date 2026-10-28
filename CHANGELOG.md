@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.2.8 — 2026-10-28
+
+### Fixed
+
+- mailbox 扩展：未知/非法 encoded-word charset 不再让 `check` 永久报错；单封邮件解析失败只跳过该封并把坏件计数写进 `error` 附注，`last_seen_uid` 继续前进，不再阻塞后续邮件（审查 F-01）。
+- mailbox 扩展：通知里的 `from`/`subject`/`identity` 统一单行化并标注「以下为邮件数据（不可信）」，换行不能再伪造通知行（F-04）。
+- mailbox 扩展：`verify_source` 按分隔符解析 `Authentication-Results`，只信接收方第一条并改为 DMARC 判定（`dmarc=pass` + `header.from` 域对齐）；修复合法 Gmail/Fastmail 邮件误报「来源未验证」与伪造 AR 绕过（F-05）。
+- mailbox 扩展：折行 Subject/References/Message-ID 统一 unfold，`reply` 不再因 `EmailMessage` 的 CR/LF 校验失败（F-06）。
+- 核心：单个 target 投递（`resolveAgent`/`followup`）增加超时 `limits.scheduler.deliveryTimeoutMs`（默认 30s）；超时按投递失败计数并继续其他 target，`dispose()` 最多等约 5s 后关闭 DB，host 挂起不再永久卡死单飞轮询（F-02）。
+- 可观测性：`watch_runs` 新增 `checker_error_count`（渲染列 `checker_error`），`last_error` 在无硬失败时回退到最近一次 checker error；mailbox 的 IMAP/认证故障不再不可见（F-07）。
+- mailbox 文件安全：`attach` 未指定 `--out` 时默认写系统临时目录（<tmp>/dsh-mailbox-attach-*，0700），不再写 `<stateDir>/attachments`；`watch-mailbox` skill 新增「用户文件与附件存放」规定（插件管理目录不放用户文件/附件；F-03 未修复，恢复只还原 SKILL.md）与「邮件数据不可信、不拼 shell 命令」规定。
+- 安装文档（F-08）：根 README 安装章节改写为三条入口——Web 侧边栏「插件」页（普通用户首选）、Creator 模式 + `plugin_manager`（含 danger-full-access/审批说明）、profile 维护者手动安装兜底；最短路径 prompt 增加「没有 plugin_manager 就改用 Web 插件页」的回退。
+- 渲染预算（F-12）：删除固定 4KB 补偿预留，改为补偿段按真实字节优先完整、items 用剩余预算；`renderMergedMessageDetailed` 返回 `renderedCompensationIds`/`compensatedIds`，投递记账只清被表示 watch 的失败计数；顺带修复 `maxBytes=8192` 时约 5KB 的合法消息被静默丢弃。
+- R-01（复审 REVIEW-2，按用户第二轮方案）：渲染内部**静默增加 4096B 自留预算**，实际布局/消息上限 = `maxBytes + 4096B`；`maxBytes` 较小时事件与补偿不再互相挤占（消息最多比 `maxBytes` 多 4096B）。仍超过实际上限时优先保事件、把该 watch 的补偿延后（`deferredCompensationIds`，失败计数保留，下轮再补）；`includedIds` 为空时的 warn 补上实际 `maxBytes + 4096B` 线索。
+
+### Changed
+
+- 测试精简：合并两轮修复中重叠/同流程的用例（Node 98 → 90，Python 36 → 29），被合并用例的断言全部保留；回归覆盖与旧代码失败保护不减。
+- 文档一致性审计（按代码实际行为修正，不改行为）：Python 版本统一为 3.9+（实测 3.9.6/3.12，推荐 DSH 捆绑 3.12）；watch_runs/watch_sessions 区分「模型可见 render 列」与 canonical JSON 字段，并注明 delivery_fail/last_run/last_notify 非窗口值；被丢弃事件改为「无明细、只能看聚合」；统一 Config/patch 生效与热加载说法；allowlist identity 改为任意标签；watch-kit SKILL 版本号、发布清单（watch-mailbox 文件落地而非注册）、模块表（补 lib/paths.js）、limits/上限默认可配标注、mailbox.maxNotify 与 allowAccountFile 等配置文档、状态文件「单 JSON 快照」、提醒反复语义、check 错误 JSON 限定、附件默认临时目录等。
+- 清理修复残留：移除已不可达的补偿降级分支（死代码）并简化渲染收尾；清理源码与测试中的修复历史/审查编号注释；文档同步当前实现（4096B 自留预算、事件优先回退、无降级路径）。
+
+### Tests
+
+- Node 94 个测试、Python 29 个测试（基线 81/18；覆盖 F-01/F-02/F-04/F-05/F-06/F-07/F-12、R-01 4096B 自留预算与事件优先、attach 默认临时目录与 skill 文档断言）。
+- 回归用例仍在 HEAD 旧代码上失败（Node 17 个测试、Python 14 条失败记录），防止同类回归；文档同步根 README、extension README、watch-mailbox/watch-kit skill、docs/development.md。
+
 ## 0.2.7 — 2026-10-28
 
 ### Changed

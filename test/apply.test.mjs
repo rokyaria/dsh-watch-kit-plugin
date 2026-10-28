@@ -11,13 +11,13 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { apply, Config, inject, name } from '../lib/index.js'
 import { WatchDB } from '../lib/db.js'
-import { cleanup, makeFakeSubprocess, makeHostCtx, makeTmp, rawRun, waitFor, watchEntry } from './helpers/harness.mjs'
+import { cleanup, makeFakeSubprocess, makeHostCtx, makeTmp, rawQuery, rawRun, waitFor, watchEntry } from './helpers/harness.mjs'
 
 const DEFAULT_POLL_MS = 10_000
 const DEFAULT_LIMITS = {
   checker: { maxStdoutBytes: 65536, maxStderrBytes: 8192, maxMessageBytes: 8192, maxErrorBytes: 2048 },
   message: { maxItems: 20, maxBytes: 16384 },
-  scheduler: { maxConcurrentChecks: 4, runRetentionDays: 7 },
+  scheduler: { maxConcurrentChecks: 4, runRetentionDays: 7, deliveryTimeoutMs: 30000 },
 }
 const exists = (file) => stat(file).then(() => true, () => false)
 
@@ -60,6 +60,11 @@ test('exports the plugin name, inject list and Config defaults', () => {
   assert.equal(Config({ limits: { checker: { maxStdoutBytes: 8192 } } }).limits.message.maxItems, 20)
   assert.throws(() => Config({ limits: { checker: { maxStdoutBytes: 1 } } }), /maxStdoutBytes/)
   assert.throws(() => Config({ limits: { scheduler: { runRetentionDays: 0 } } }), /runRetentionDays/)
+  // scheduler.deliveryTimeoutMs：默认 30s，越界（<1000 / >600000）拒绝
+  assert.equal(Config({}).limits.scheduler.deliveryTimeoutMs, 30_000)
+  assert.equal(Config({ limits: { scheduler: { deliveryTimeoutMs: 5_000 } } }).limits.scheduler.deliveryTimeoutMs, 5_000)
+  assert.throws(() => Config({ limits: { scheduler: { deliveryTimeoutMs: 500 } } }), /deliveryTimeoutMs/)
+  assert.throws(() => Config({ limits: { scheduler: { deliveryTimeoutMs: 700_000 } } }), /deliveryTimeoutMs/)
 })
 
 test('apply uses <DSH_HOME>/watch defaults and never queries sessions', async () => {
@@ -193,5 +198,31 @@ test('apply closes the poller/DB and rejects when command registration throws', 
     assert.equal(host.state.intervals.length, 0, 'no poll interval registered after the failure')
     assert.equal(host.state.tools.length, 0, 'tools not registered after the command failure')
     host.disposeAll() // must stay a safe no-op
+  })
+})
+
+test('apply forwards scheduler.deliveryTimeoutMs so a hung followup fails the delivery instead of stalling', { timeout: 10_000 }, async () => {
+  await withDshHome(async (home) => {
+    const { dbFile } = defaultPaths(home)
+    seedDueWatch(dbFile)
+    const subprocess = makeFakeSubprocess([{ stdout: '{"notify":true,"message":"hung target"}' }])
+    const host = makeHostCtx({ subprocess })
+    // 模拟 host 挂起：resolveAgent 正常，但 followup 返回永不 settle 的 Promise。
+    host.ctx.sessionController = {
+      ...host.ctx.sessionController,
+      resolveAgent: async (target) => ({ agent: { id: target, followup: () => new Promise(() => {}) } }),
+    }
+    await apply(host.ctx, { limits: { scheduler: { deliveryTimeoutMs: 1000 } } })
+    try {
+      await waitFor(() => {
+        const watch = rawQuery(dbFile, 'SELECT delivery_fail_count, last_delivery_error FROM watches')[0]
+        return watch.delivery_fail_count === 1
+      }, { timeout: 3_000 })
+      const watch = rawQuery(dbFile, 'SELECT last_delivery_error FROM watches')[0]
+      assert.match(String(watch.last_delivery_error), /超时/)
+      assert.equal(rawQuery(dbFile, 'SELECT delivered FROM runs')[0].delivered, 0)
+    } finally {
+      host.disposeAll()
+    }
   })
 })

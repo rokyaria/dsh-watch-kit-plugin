@@ -8,12 +8,24 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { Poller } from '../lib/poller.js'
+import { RENDER_HEADROOM_BYTES } from '../lib/render.js'
 import {
   cleanup, makeFakeSubprocess, makeLogger, makeSession, makeTmp, openDb, rawQuery, watchEntry, waitFor,
 } from './helpers/harness.mjs'
 
 const NOW = 1_800_000_000_000
 const MINUTE = 60_000
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** 有界等待：promise 永不 settle 时用例快速失败而不是挂起。 */
+function withDeadline(promise, ms = 1_000, label = 'poll') {
+  let timer
+  const deadline = new Promise((resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} 未在 ${ms}ms 内 settle`)), ms)
+  })
+  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer))
+}
 
 async function withPoller(options, fn) {
   const dir = await makeTmp()
@@ -28,6 +40,14 @@ async function withPoller(options, fn) {
     deliverCalls.push(input)
     const step = typeof failPlan === 'function' ? failPlan(attempt, input) : failPlan[attempt - 1]
     if (step === 'throw') throw new Error('delivery failed')
+    if (step === 'hang') return new Promise(() => {})
+    if (step !== null && typeof step === 'object') {
+      if (typeof step.rejectAfterMs === 'number') {
+        await sleep(step.rejectAfterMs)
+        throw step.error instanceof Error ? step.error : new Error(String(step.error ?? 'late delivery failure'))
+      }
+      throw step instanceof Error ? step : new Error(String(step))
+    }
     if (step !== undefined) throw step instanceof Error ? step : new Error(String(step))
   }
   const clock = { value: options.now ?? NOW }
@@ -40,7 +60,10 @@ async function withPoller(options, fn) {
     pollIntervalMs: 10_000,
     now: () => clock.value,
     maxConcurrentChecks: options.maxConcurrentChecks ?? 4,
+    messageLimits: options.messageLimits,
     retentionMs: options.retentionMs,
+    deliveryTimeoutMs: options.deliveryTimeoutMs,
+    disposeGraceMs: options.disposeGraceMs,
   })
   try {
     return await fn({ poller, db, file, logger, subprocess, deliverCalls, clock, session })
@@ -405,4 +428,241 @@ test('stale events are dropped when the watch is deleted/disabled/retargeted bet
     const warnings = logger.lines.filter((line) => line.level === 'warn' && /丢弃过期事件/.test(line.message))
     assert.equal(warnings.length, 3)
   })
+})
+
+test('poller defaults deliveryTimeoutMs to 30s and falls back for invalid values', () => {
+  assert.equal(new Poller({}).deliveryTimeoutMs, 30_000)
+  assert.equal(new Poller({ deliveryTimeoutMs: 0 }).deliveryTimeoutMs, 30_000)
+  assert.equal(new Poller({ deliveryTimeoutMs: Number.NaN }).deliveryTimeoutMs, 30_000)
+  assert.equal(new Poller({ deliveryTimeoutMs: 1200 }).deliveryTimeoutMs, 1200)
+})
+
+test('delivery timeout: a hung deliver fails the round, the next round recovers and a late rejection is swallowed', { timeout: 10_000 }, async () => {
+  // 场景 1：deliver 永不 settle → 本轮按失败记账、下一轮正常投递、清零并补偿这次超时。
+  {
+    const subprocess = makeFakeSubprocess([
+      { stdout: '{"notify":true,"message":"first"}' },
+      { stdout: '{"notify":true,"message":"second"}' },
+    ])
+    await withPoller({ subprocess, deliveryTimeoutMs: 50, failPlan: ['hang'] }, async ({ poller, db, file, deliverCalls, logger, clock }) => {
+      db.applyConfig([watchEntry({ id: 'a' })], NOW)
+
+      await withDeadline(poller.poll())
+
+      assert.equal(deliverCalls.length, 1, 'one delivery attempt in the first round')
+      const failed = db.getWatch('a')
+      assert.equal(failed.deliveryFailCount, 1)
+      assert.equal(failed.deliveryFailStreak, 1)
+      assert.equal(failed.deliveryFirstFailAt, NOW)
+      assert.match(String(failed.lastDeliveryError), /超时/)
+      assert.equal(failed.lastNotifyAt, null)
+      assert.equal(rawQuery(file, 'SELECT delivered FROM runs')[0].delivered, 0, 'run stays undelivered')
+      assert.ok(
+        logger.lines.some((line) => line.level === 'warn' && /超时/.test(line.message)),
+        'delivery timeout is logged as a warning',
+      )
+
+      clock.value += MINUTE + 1
+      await withDeadline(poller.poll())
+
+      assert.equal(deliverCalls.length, 2, 'the next interval tick delivers again instead of reusing a stuck promise')
+      const recovered = db.getWatch('a')
+      assert.equal(recovered.deliveryFailCount, 0)
+      assert.equal(recovered.deliveryFailStreak, 0)
+      assert.equal(recovered.deliveryFirstFailAt, null)
+      assert.equal(recovered.lastDeliveryError, null)
+      assert.equal(recovered.lastNotifyAt, clock.value)
+      assert.equal(rawQuery(file, 'SELECT COUNT(*) AS c FROM runs WHERE delivered = 1')[0].c, 1)
+      assert.match(deliverCalls[1].text, /投递失败 1 次/, 'the timeout failure is compensated on the next success')
+      assert.match(deliverCalls[1].text, /超时/, 'compensation carries the timeout error')
+    })
+  }
+
+  // 场景 2：超时之后底层 promise 迟到 reject 必须被吞掉，否则产生 unhandledRejection。
+  {
+    const subprocess = makeFakeSubprocess([{ stdout: '{"notify":true,"message":"event"}' }])
+    const unhandled = []
+    const onUnhandled = (reason) => { unhandled.push(reason) }
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      await withPoller({
+        subprocess,
+        deliveryTimeoutMs: 50,
+        failPlan: [{ rejectAfterMs: 150, error: 'late gateway error' }],
+      }, async ({ poller, db }) => {
+        db.applyConfig([watchEntry({ id: 'a' })], NOW)
+
+        await withDeadline(poller.poll())
+
+        assert.match(String(db.getWatch('a').lastDeliveryError), /超时/)
+        // 覆盖底层 promise 迟到 reject 的时刻；未被吞掉的话这里会收到 unhandledRejection。
+        await sleep(200)
+        assert.deepEqual(unhandled, [])
+      })
+    } finally {
+      process.removeListener('unhandledRejection', onUnhandled)
+    }
+  }
+})
+
+test('delivery timeout: a hung target does not block delivery to another target in the same round', { timeout: 10_000 }, async () => {
+  const subprocess = makeFakeSubprocess((spec) => ({
+    stdout: JSON.stringify({ notify: true, message: `event ${spec.env.WATCH_ID}` }),
+  }))
+  const failPlan = (attempt, input) => (input.target === 'session-slow' ? 'hang' : undefined)
+  await withPoller({ subprocess, deliveryTimeoutMs: 50, failPlan }, async ({ poller, db, deliverCalls }) => {
+    db.applyConfig([
+      watchEntry({ id: 'a-slow', target: 'session-slow' }),
+      watchEntry({ id: 'b-fast', target: 'session-fast' }),
+    ], NOW)
+
+    await withDeadline(poller.poll())
+
+    assert.equal(deliverCalls.length, 2, 'both targets are attempted in the same round')
+    assert.deepEqual(deliverCalls.map((call) => call.target), ['session-slow', 'session-fast'])
+    const slow = db.getWatch('a-slow')
+    assert.equal(slow.deliveryFailCount, 1, 'the hung target is recorded as a delivery failure')
+    assert.match(String(slow.lastDeliveryError), /超时/)
+    assert.equal(slow.lastNotifyAt, null)
+    const fast = db.getWatch('b-fast')
+    assert.equal(fast.lastNotifyAt, NOW, 'the healthy target is still delivered')
+    assert.equal(fast.deliveryFailCount, 0)
+  })
+})
+
+test('dispose: a hung delivery cannot delay closing the DB beyond the grace window', { timeout: 10_000 }, async () => {
+  const subprocess = makeFakeSubprocess([{ stdout: '{"notify":true,"message":"event"}' }])
+  await withPoller({ subprocess, deliveryTimeoutMs: 500, disposeGraceMs: 50, failPlan: ['hang'] }, async ({ poller, db, deliverCalls, logger }) => {
+    db.applyConfig([watchEntry({ id: 'a' })], NOW)
+
+    void poller.poll()
+    await waitFor(() => deliverCalls.length === 1)
+
+    const originalClose = db.close.bind(db)
+    let closeCalls = 0
+    db.close = () => { closeCalls += 1; originalClose() }
+
+    poller.dispose()
+    assert.equal(poller.stopped, true)
+    await withDeadline(poller.poll(), 500, 'stopped poll')
+
+    await waitFor(() => closeCalls === 1, { timeout: 2_000 })
+    assert.equal(closeCalls, 1, 'db.close runs exactly once')
+    assert.throws(() => db.getWatch('a'), /database|closed|not open/i)
+    assert.ok(
+      logger.lines.some((line) => line.level === 'warn' && /dispose/.test(line.message)),
+      'force-close after the grace window is logged',
+    )
+
+    poller.dispose() // 幂等：不会再次 close
+    assert.equal(closeCalls, 1)
+  })
+})
+
+test('dispose: a delivery timeout after the forced DB close is only a bookkeeping warning', { timeout: 10_000 }, async () => {
+  const subprocess = makeFakeSubprocess([{ stdout: '{"notify":true,"message":"event"}' }])
+  await withPoller({ subprocess, deliveryTimeoutMs: 100, disposeGraceMs: 40, failPlan: ['hang'] }, async ({ poller, db, deliverCalls, logger }) => {
+    db.applyConfig([watchEntry({ id: 'a' })], NOW)
+
+    const round = poller.poll()
+    await waitFor(() => deliverCalls.length === 1)
+    poller.dispose() // grace 到期先关闭 DB，随后投递超时才记账
+
+    await withDeadline(round)
+    assert.ok(
+      logger.lines.some((line) => line.level === 'warn' && /记录投递失败失败/.test(line.message)),
+      'failure bookkeeping is attempted after the DB closed and only warns',
+    )
+    assert.ok(logger.lines.some((line) => line.level === 'warn' && /超时/.test(line.message)))
+  })
+})
+
+test('F-12: only represented compensations clear failure counters; a watch dropped to keep compensation complete keeps its counters', async () => {
+  // 默认 maxBytes=16KB 的实际上限为 20KB；消息保持 ~860B，
+  // 让 w18 因「补偿段优先完整」被丢弃，从而验证被丢事件不清失败计数。
+  const subprocess = makeFakeSubprocess((spec) => ({
+    stdout: JSON.stringify({ notify: true, message: `event ${spec.env.WATCH_ID} ${'x'.repeat(850)}` }),
+  }))
+  await withPoller({ subprocess }, async ({ poller, db, file, deliverCalls }) => {
+    const ids = Array.from({ length: 19 }, (_, index) => `w${String(index).padStart(2, '0')}`)
+    db.applyConfig(ids.map((id) => watchEntry({ id, target: 'session-1' })), NOW)
+    // 前 10 个 watch 的历史失败填满 10 行补偿；w18 的失败只能被汇总覆盖。
+    // 为了让补偿段完整，渲染器会少放 items，被丢弃事件的失败计数必须保留。
+    const longError = '错'.repeat(128)
+    for (const id of ids.slice(0, 10)) db.recordDeliveryFailure([id], longError, NOW - 3_600_000)
+    db.recordDeliveryFailure(['w18'], 'old gateway error', NOW - 3_600_000)
+
+    await poller.poll()
+
+    assert.equal(deliverCalls.length, 1, 'one merged delivery for the target')
+    const text = deliverCalls[0].text
+    assert.ok(!text.includes('[truncated]'), 'the compensation section is never clipped to fit items')
+    assert.equal(text.split('\n- ').length - 1, 10, '10 complete compensation rows')
+    assert.equal(text.includes('event w18 '), false, 'the last event is dropped so the compensation section stays complete')
+
+    // 被丢弃的 w18 没有被本次消息表示：失败计数与未投递状态都必须保留，供后续补偿/追溯。
+    const dropped = db.getWatch('w18')
+    assert.equal(dropped.lastNotifyAt, null)
+    assert.equal(dropped.deliveryFailCount, 1)
+    assert.equal(dropped.deliveryFailStreak, 1)
+    assert.equal(dropped.lastDeliveryError, 'old gateway error')
+    assert.equal(rawQuery(file, "SELECT delivered FROM runs WHERE watch_id = 'w18'")[0].delivered, 0)
+
+    // included 且补偿行完整写出的 watch 正常记账并清零失败计数。
+    for (const id of ids.slice(0, 10)) {
+      const watch = db.getWatch(id)
+      assert.equal(watch.deliveryFailStreak, 0, `${id} was compensated and is cleared`)
+      assert.equal(watch.deliveryFailCount, 0)
+      assert.equal(watch.lastNotifyAt, NOW)
+    }
+  })
+})
+
+test('R-01: with maxBytes=8192 a large event and its compensation are both delivered via the 4096B headroom', async () => {
+  // 端到端：8192（合法最小值）+ 8000B 事件 + 该 watch 有 1 次历史投递失败。
+  // 实际上限=8192+4096=12288：事件与补偿段同一条消息投递，失败计数正常清零。
+  const longError = 'gateway/internal error '.repeat(8)
+  const effective = 8192 + RENDER_HEADROOM_BYTES
+  const subprocess = makeFakeSubprocess(() => ({ stdout: JSON.stringify({ notify: true, message: 'x'.repeat(8_000) }) }))
+  await withPoller(
+    { subprocess, messageLimits: { maxItems: 20, maxBytes: 8192 } },
+    async ({ poller, db, file, deliverCalls, clock, logger }) => {
+      db.applyConfig([watchEntry({ id: 'a' })], NOW)
+      db.recordDeliveryFailure(['a'], longError, NOW - 3_600_000)
+
+      await poller.poll()
+
+      assert.equal(deliverCalls.length, 1, 'the watch is delivered instead of being silently starved')
+      const text = deliverCalls[0].text
+      assert.ok(text.includes('x'.repeat(8_000)), 'the event itself reaches the target')
+      assert.ok(text.includes('[投递失败补偿]'), 'the compensation section is delivered in the same message')
+      assert.ok(text.includes('投递失败 1 次'), 'the one-time compensation is represented')
+      assert.ok(text.includes(longError.slice(0, 128)), 'the compensation carries the failure error')
+      const bytes = Buffer.byteLength(text, 'utf8')
+      assert.ok(bytes > 8192, `bytes=${bytes} uses the internal 4096B headroom over the configured maxBytes`)
+      assert.ok(bytes <= effective, `bytes=${bytes} stays within maxBytes + RENDER_HEADROOM_BYTES`)
+      assert.equal(logger.lines.some((line) => line.level === 'warn' && /没有可投递的事件/.test(line.message)), false)
+
+      const runs = rawQuery(file, 'SELECT watch_id, delivered FROM runs')
+      assert.equal(runs.length, 1)
+      assert.equal(runs[0].delivered, 1, 'the included run is marked delivered')
+
+      const watch = db.getWatch('a')
+      assert.equal(watch.lastNotifyAt, NOW, 'the included watch is marked notified')
+      assert.equal(watch.deliveryFailCount, 0, 'the represented compensation clears the failure count')
+      assert.equal(watch.deliveryFailStreak, 0)
+      assert.equal(watch.lastDeliveryError, null)
+
+      // 配置不变时下一轮仍能投递，且不再重复补偿。
+      clock.value += MINUTE + 1
+      await poller.poll()
+      assert.equal(deliverCalls.length, 2, 'the next due round delivers again')
+      assert.ok(deliverCalls[1].text.includes('x'.repeat(8_000)))
+      assert.equal(deliverCalls[1].text.includes('[投递失败补偿]'), false, 'compensation is one-time')
+      const after = db.getWatch('a')
+      assert.equal(after.lastNotifyAt, clock.value)
+      assert.equal(after.deliveryFailCount, 0)
+      assert.equal(rawQuery(file, 'SELECT delivered FROM runs ORDER BY id')[1].delivered, 1, 'the second run is delivered too')
+    },
+  )
 })
