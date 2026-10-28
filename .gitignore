@@ -4,6 +4,8 @@ node_modules/
 # 本地/编辑器噪声
 .DS_Store
 *.log
+.idea/
+.vscode/
 
 # Python caches (mailbox extension tests)
 __pycache__/
