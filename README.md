@@ -115,7 +115,7 @@
 }
 ```
 
-默认所有人都不通知，必须用 per-account allowlist 显式允许；不能把授权码写进 `watches.json`。`mailbox.python` 需要 **Python 3.10+**（macOS 自带 `/usr/bin/python3` 是 3.9，不够用；可写 DSH 自带 Python 的绝对路径）。完整说明、模板和严格行为见 [extension/mailbox/README.md](https://github.com/rokyaria/dsh-watch-kit-plugin/blob/main/extension/mailbox/README.md)。
+默认所有人都不通知，必须用 per-account allowlist 显式允许；不能把授权码写进 `watches.json`。allowlist 里的 `identity` 是**任意标签**（默认约定 `user` = 所有者、`guest` = 外部），`mail.py` 只传递标签与 SPF/DKIM 结果，身份对应的行为全部由 `watch-mailbox` skill 定义。`mailbox.python` 需要 **Python 3.10+**（macOS 自带 `/usr/bin/python3` 是 3.9，不够用；可写 DSH 自带 Python 的绝对路径）。完整说明、模板和严格行为见 [extension/mailbox/README.md](https://github.com/rokyaria/dsh-watch-kit-plugin/blob/main/extension/mailbox/README.md)。
 
 `mail.py` 也支持 agent 主动发信（`send`）：**默认不主动发**；只有用户当次明确要求，或与 agent 在会话中约定过场景（一次授权即对约定范围生效）才主动发，具体边界由用户与 agent 自行约定。
 

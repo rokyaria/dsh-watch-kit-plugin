@@ -255,16 +255,18 @@ class MailboxTest(unittest.TestCase):
         self.assertFalse(self.parse_json(out)["notify"])
         self.assertEqual(self.state()["messages"]["2"]["status"], "ignored")
 
-    def test_unverified_user_is_downgraded_to_guest(self):
+    def test_unverified_user_keeps_declared_identity(self):
         self.add(1)
         self.check()
         self.add(2, auth=False, subject="no auth")
         code, out, _err = self.check()
         data = self.parse_json(out)
         self.assertTrue(data["notify"])
-        self.assertIn("guest", data["message"])
         self.assertIn("来源未验证", data["message"])
-        self.assertEqual(self.state()["messages"]["2"]["identity"], "guest")
+        self.assertIn("user", data["message"])
+        record = self.state()["messages"]["2"]
+        self.assertEqual(record["identity"], "user")
+        self.assertEqual(record["source"], "unknown")
 
     def test_wildcard_guest_is_allowed(self):
         self.allow_file.write_text(
@@ -278,6 +280,28 @@ class MailboxTest(unittest.TestCase):
         data = self.parse_json(out)
         self.assertTrue(data["notify"])
         self.assertIn("guest", data["message"])
+
+    def test_arbitrary_identity_label_passes_through(self):
+        self.allow_file.write_text(
+            json.dumps({"agent@example.com": [{"address": "owner@example.com", "identity": "vendor"}]}),
+            encoding="utf-8",
+        )
+        self.add(1)
+        self.check()
+        self.add(2, subject="quote")
+        code, out, _err = self.check()
+        data = self.parse_json(out)
+        self.assertTrue(data["notify"])
+        self.assertIn("vendor", data["message"])
+        self.assertEqual(self.state()["messages"]["2"]["identity"], "vendor")
+
+    def test_allow_cli_accepts_arbitrary_identity(self):
+        code, _out, err = self.run_cli(
+            ["allow", *self.common, "--add-allow-account", "vendor@example.com", "--identity", "vendor"]
+        )
+        self.assertEqual(code, 0, err)
+        data = json.loads(self.allow_file.read_text(encoding="utf-8"))
+        self.assertIn({"address": "vendor@example.com", "identity": "vendor"}, data["agent@example.com"])
 
     def test_reply_auto_marks_and_sets_thread_headers(self):
         self.add(1)

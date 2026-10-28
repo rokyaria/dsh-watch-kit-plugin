@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.7 — 2026-10-28
+
+### Changed
+
+- `mail.py` 移除全部身份语义与硬编码，只做数据传递：allowlist 的 `identity` 可以是**任意标签**（不再限定 user/guest）；SPF/DKIM 结果只作为 `source` 数据返回，**不再把未验证的 user 降级为 guest**；附件下载/回复带附件**不再按身份做代码门禁**（`attach --force` 保留为兼容参数，无行为）。
+- `allow --identity` 不再限定可选值，任意标签都可写入 allowlist。
+- `watch-mailbox` skill 更新身份约定：身份标签由 allowlist 定义、行为由 skill 约定；默认 user/guest 约定保留，自定义标签未约定时按 guest 处理，来源未验证一律按 guest 处理。
+- 文档同步：extension README §2/§5、项目 README。
+
+### Tests
+
+- python 测试改为断言“声明身份保留 + 来源未验证标注”；新增任意身份标签透传、`allow --identity` 任意标签用例。
+
 ## 0.2.6 — 2026-10-28
 
 ### Changed

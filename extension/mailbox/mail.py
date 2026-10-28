@@ -8,6 +8,11 @@ This one script is both:
 It does not use IMAP Seen flags. State is a JSONL file under --state-dir, one
 line per successful check/mutation, so the checker owns its own reminder state.
 
+The allowlist maps senders to a free-form `identity` label and the SPF/DKIM
+verdict is reported as `source`; this script does not interpret either — the
+`watch-mailbox` skill (or the user/agent agreement) defines what each identity
+means and what actions are allowed.
+
 Python 3.10+, standard library only.
 """
 
@@ -208,11 +213,11 @@ def load_allow_file(path: Path) -> dict[str, list[dict[str, str]]]:
             if not isinstance(rule, dict):
                 raise MailboxError("允许名单规则必须是对象")
             address = str(rule.get("address") or "").strip().lower()
-            identity = str(rule.get("identity") or "guest").strip().lower()
+            # identity 是 allowlist 定义的任意标签（user/guest/自定义）；
+            # mail.py 只做数据传递，不解释行为含义（行为约定在 watch-mailbox skill）。
+            identity = str(rule.get("identity") or "").strip().lower() or "guest"
             if address != "*" and ("@" not in address or any(ch.isspace() for ch in address)):
                 raise MailboxError(f"允许名单地址不合法: {address!r}")
-            if identity not in ("user", "guest"):
-                raise MailboxError(f"允许名单身份必须是 user 或 guest: {identity!r}")
             normalized.append({"address": address, "identity": identity})
         out[account.strip().lower()] = normalized
     return out
@@ -431,13 +436,8 @@ def classify(msg: email.message.Message, rules: list[dict[str, str]], now: int) 
         base.update(status="ignored", identity=rule["identity"], source="auto")
         return base
     level, _text = verify_source(msg)
-    identity = rule["identity"]
-    source = level
-    if identity == "user" and level != "ok":
-        # An unverified "user" is not the owner for behavioral purposes.
-        identity = "guest"
-        source = "unverified"
-    base.update(status="temp", identity=identity, source=source)
+    # 声明身份原样保留；SPF/DKIM 结果只作为 source 数据交给 skill 判断如何使用。
+    base.update(status="temp", identity=rule["identity"], source=level)
     return base
 
 
@@ -773,9 +773,6 @@ def cmd_reply(args: argparse.Namespace) -> int:
     record = (state.get("messages") or {}).get(str(args.uid))
     if not isinstance(record, dict):
         raise MailboxError(f"uid {args.uid} 不在状态里；先运行 list/check")
-    identity = record.get("identity") or "guest"
-    if identity == "guest" and args.attach:
-        raise MailboxError("guest 邮件默认不允许在回复中带附件（严格策略）")
     mailbox = Mailbox(env, cfg["folder"]).connect()
     try:
         original = mailbox.full(int(args.uid))
@@ -861,12 +858,8 @@ def cmd_mark(args: argparse.Namespace) -> int:
 
 
 def cmd_attach(args: argparse.Namespace) -> int:
-    env, cfg, account = load_context(args)
-    state = read_state(state_file_for(cfg["state_dir"], account))
-    record = (state or {}).get("messages", {}).get(str(args.uid)) if state else None
-    identity = (record or {}).get("identity", "guest")
-    if identity == "guest" and not args.force:
-        raise MailboxError("guest 邮件默认不允许下载附件（严格策略；需要时显式 --force）")
+    env, cfg, _account = load_context(args)
+    # 附件是否允许下载由 skill/约定决定；--force 仅为兼容旧脚本保留（无行为）。
     mailbox = Mailbox(env, cfg["folder"]).connect()
     try:
         msg = mailbox.full(int(args.uid))
@@ -912,15 +905,11 @@ def cmd_allow(args: argparse.Namespace) -> int:
             address = args.add_allow_account.strip().lower()
             if address != "*" and ("@" not in address or any(ch.isspace() for ch in address)):
                 raise MailboxError(f"地址不合法: {address!r}")
-            identity = (args.identity or "guest").strip().lower()
-            if identity not in ("user", "guest"):
-                raise MailboxError("identity 必须是 user 或 guest")
+            identity = str(args.identity or "").strip().lower() or "guest"
             rules[:] = [rule for rule in rules if rule["address"] != address]
             rules.append({"address": address, "identity": identity})
             save_allow_file(path, data)
             print(f"{account}: 已加入 {address} -> {identity}")
-            if address == "*" and identity == "user":
-                print("警告: 把所有发件人都标成 user 风险很高", file=sys.stderr)
             return 0
         if args.remove_allow_account:
             address = args.remove_allow_account.strip().lower()
@@ -1034,7 +1023,7 @@ def build_parser() -> argparse.ArgumentParser:
     attach.add_argument("--uid", required=True)
     attach.add_argument("--out")
     attach.add_argument("--list-only", action="store_true")
-    attach.add_argument("--force", action="store_true")
+    attach.add_argument("--force", action="store_true", help="兼容参数（策略在 skill，无代码门禁）")
     attach.set_defaults(fn=cmd_attach)
 
     status = sub.add_parser("status", help="show account/state/allowlist status")
@@ -1047,7 +1036,7 @@ def build_parser() -> argparse.ArgumentParser:
     allow.add_argument("--list", action="store_true")
     allow.add_argument("--add-allow-account")
     allow.add_argument("--remove-allow-account")
-    allow.add_argument("--identity", choices=("user", "guest"))
+    allow.add_argument("--identity", help="任意身份标签（如 user / guest / 自定义），默认 guest")
     allow.set_defaults(fn=cmd_allow)
 
     init = sub.add_parser("init", help="initialize state baseline")
