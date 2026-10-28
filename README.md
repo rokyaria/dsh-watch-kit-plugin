@@ -2,7 +2,7 @@
 
 > 给 DeepSeek Harness 的常驻巡检插件：按配置的间隔运行 checker，checker 只在「有事」时输出 `notify: true`，插件才唤醒 agent；其余时间零 token、零对话。
 >
-> **当前状态：v0.2.3（v0.2.1 重写 + 随包 mailbox 扩展 + 可配置 limits）**。运行时事实源是 SQLite；watch 配置是一份 JSON 文件，编辑后执行一次 `/watch-reload` 生效。旧版命令、watch 目录与校验流程已删除，迁移见文末。
+> **当前状态：v0.2.4（v0.2.1 重写 + 随包 mailbox 扩展 + 文件化扩展 skill + 用户级运行时状态）**。运行时事实源是 SQLite，配置/DB 都在用户级 `$DSH_HOME`（默认 `~/.dsh/watch/`）；watch 配置是一份 JSON 文件，编辑后执行一次 `/watch-reload` 生效。旧版命令、watch 目录与校验流程已删除，迁移见文末。
 
 ## 它是什么
 
@@ -18,7 +18,7 @@
 
 > 请帮我安装并配置 dsh-watch-kit-plugin（仓库：https://github.com/rokyaria/dsh-watch-kit-plugin）：
 > 1. 把仓库 clone 到本机，用 `plugin_manager install_bundle target=<clone 后的绝对路径>` 安装，确认返回 `application:"applied"`；若提示 `restart-required` 按提示重启 DSH。
-> 2. 先读仓库 README，按“快速开始”在这个工作区的 `.dsh/watch/watches.json` 创建一个 watch 示例（checker 按我的实际需求写）。
+> 2. 先读仓库 README，按“快速开始”在 `~/.dsh/watch/watches.json`（用户级；可用 `$DSH_HOME` 覆盖）创建一个 watch 示例（checker 按我的实际需求写）。
 > 3. 不要改 profile 的 `cordis.patch.yml`，直接用默认配置；完成后告诉我，我自己在输入框发 `/watch-reload`。
 
 你只需要做两件事：发上面这段；agent 完成后自己发送 `/watch-reload`（slash command 只能由你在会话里输入，agent 不能代发）。之后有事件时你会收到 `[WATCH 通知]`，也可让 agent 用 `watch_runs` 查看统计。
@@ -104,7 +104,7 @@
   "enabled": false,
   "mailbox": {
     "envFile": "/absolute/path/to/mail.env",
-    "stateDir": "/absolute/path/to/.dsh/mailbox",
+    "stateDir": "~/.dsh/mailbox",
     "allowAccountFile": "/absolute/path/to/allow-accounts.json",
     "remindAfterMinutes": 30,
     "folder": "INBOX",
@@ -115,7 +115,7 @@
 }
 ```
 
-默认所有人都不通知，必须用 per-account allowlist 显式允许；不能把授权码写进 `watches.json`。完整说明、模板和严格行为见 [extension/mailbox/README.md](https://github.com/rokyaria/dsh-watch-kit-plugin/blob/main/extension/mailbox/README.md)。
+默认所有人都不通知，必须用 per-account allowlist 显式允许；不能把授权码写进 `watches.json`。`mailbox.python` 需要 **Python 3.10+**（macOS 自带 `/usr/bin/python3` 是 3.9，不够用；可写 DSH 自带 Python 的绝对路径）。完整说明、模板和严格行为见 [extension/mailbox/README.md](https://github.com/rokyaria/dsh-watch-kit-plugin/blob/main/extension/mailbox/README.md)。
 
 `watch-kit` skill 由插件运行时注册；`watch-mailbox` **不常驻注册**——当配置里存在 `enabled: true` 的 `preset: "mailbox"` watch 时，`/watch-reload` 会把它落地成 `<dshHome>/skills/watch-mailbox/SKILL.md`（可直接编辑，插件不覆盖）；停用时整目录移入 `<dshHome>/watch/extension/skills/watch-mailbox/`（单份，覆盖旧归档），重新启用自动恢复。随包内容更新见 CHANGELOG，需自行比对决定是否替换。
 
@@ -212,6 +212,12 @@ fi
 - DSH 必须在运行：插件随 DSH 启停，不依赖系统 cron，也没有 OS 通知。
 - 无沙箱：checker 以你的用户身份运行，权限与普通 shell 相同。
 - 运行记录保留 7 天（每轮/每次 reload 顺带清理）；卸载插件后停止轮询并关闭 DB，配置文件与 DB 仍保留在磁盘上。
+
+## 从 0.2.3 升级到 0.2.4
+
+- **运行时状态改为用户级**：`watches.json` / `watch.db` 默认从 `<workspace>/.dsh/watch/` 迁到 `<dshHome>/watch/`（默认 `~/.dsh/watch/`）。旧文件**不会自动迁移**——需要保留就先复制到 `~/.dsh/watch/`（或在 profile patch 里显式写旧路径），再 `/watch-reload`；不迁移相当于一份全新的空 watch 配置。
+- **mailbox skill 改为文件落地**：不再常驻运行时注册；存在 `enabled: true` 的 `preset: "mailbox"` watch 时由 `/watch-reload` 写入 `<dshHome>/skills/watch-mailbox/SKILL.md`（不覆盖用户修改），停用归档到 `<dshHome>/watch/extension/skills/watch-mailbox/`。升级后发送一次 `/watch-reload` 让 skill 落地。
+- 相对路径的 `configFile`/`dbFile` 改为按 `$DSH_HOME` 解析（不再按会话 cwd/workspace）。
 
 ## 从 0.1 升级（破坏性）
 
