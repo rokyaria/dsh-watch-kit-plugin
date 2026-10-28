@@ -1,5 +1,162 @@
 # Changelog
 
+## 0.3.1 — 2026-10-29
+
+> 结构性重构版本：把 1659 行的单文件 mailbox 扩展拆成包，修掉一批稳定性/边界问题；
+> 对外行为（CLI 子命令、JSON 契约、状态机、通知文本、插件配置与工具）保持不变。
+
+### Changed
+
+- **`extension/mailbox/mail.py` 拆分**：入口文件从 1659 行缩到约 30 行，只做
+  `sys.path` 引导 + `from mailbox_core.cli import main`；实现移入
+  `extension/mailbox/mailbox_core/`：
+  `errors` / `model` / `text` / `config` / `locking` / `allowlist` / `imap` / `smtp` /
+  `source` / `classify` / `state` / `records` / `legacy` / `notify` / `checker` 以及
+  `cli/{__init__,parser,common,check,inbox,compose,admin}.py`。插件侧调用入口
+  `extension/mailbox/mail.py` 不变，`python3 mail.py <subcommand>` 与
+  `import mail; mail.main([...])` 两种用法都可用。
+- **`extension/mailbox/` 结构整理**：配置模板移到 `examples/`
+  （`mail.env.example` / `watches.example.json` / `allow-accounts.example.json`），
+  README、随包 skill 与文档同步新路径；清理 `__pycache__`。
+- **`check` 每轮最多 FETCH 200 个新 UID**：新信风暴或首次
+  `--notify-existing` 大邮箱时 checker 不会因超时被反复杀死，剩余新信下一轮
+  继续（状态机语义不变：未落库的 UID 仍是「新邮件」）。
+- **状态库来源归一化改为按需**：只有存在非规范值（大小写/空白/旧值）时才
+  `UPDATE`，避免每轮 check 对整表写 WAL；无脏值时零写入。
+- **`mark` 改为全有或全无**：先整体校验所有 UID（存在、状态允许），再一个事务
+  写入；任一非法时零写入并报错。重复 UID 自动去重。
+- **`allow` 参数改为互斥必选**（`--list` / `--add-allow-account` /
+  `--remove-allow-account` 三选一）；`--identity` 只能与 `--add-allow-account`
+  一起使用。锁文件权限 0600，stale 锁处理更稳。
+- **CLI 边界加固**：`read`/`attach` 的 `--uid` 非法时给出 `uid 不合法` 的可读
+  错误（与 reply/mark 一致）；`list --limit` clamp 到 1–1000；`read` 优先取非附件
+  `text/plain` 正文；`attach` 文件名单行化并去掉路径分隔符/Windows 非法字符、
+  限制长度，避免越出输出目录。
+- **UTF-8 stdio**：`mail.py` 入口把 stdout/stderr 重新配置为 UTF-8（errors=replace），
+  在 Windows/重定向环境下中文与 JSON 不再乱码或抛 UnicodeEncodeError。
+- **Python `state_transaction` COMMIT 失败时尝试回滚**，避免连接卡在未结束事务。
+- **JS 侧透传 `limits.checker.maxErrorBytes`**：mailbox preset argv 新增
+  `--max-error-bytes`（默认 2048，放在 `--folder` 之后；前 8 个 argv 位置不变）。
+- **Node 小优化/修复**（详见对应测试）：路径展开统一复用 `lib/paths.js`
+  （修 Windows `~\` 边界）；`oneLine` 按码点截断避免孤立代理字符；`iso()` 遇非法
+  时间戳回退 `-` 而不是抛 RangeError；`applyConfig` 软删除在条目数极大（>900）时
+  退化为逐行软删除（其它多 id 记账语句按 900 分块），避免撞 SQLite 单语句参数
+  上限；render 的 `maxItems`/`maxBytes` 非法输入改为可预测 clamp。
+- **测试重建**：Python 测试拆成 `test/python/support/`（FakeIMAP/FakeSMTP +
+  `run_cli` harness）与按模块划分的测试文件（CLI 契约、checker、state/records、
+  legacy、source、classify、text、allowlist/config、notify）；Node 测试更新
+  mailbox preset/examples 路径并补充边界与回归用例。测试数量见下。
+
+### Added
+
+- `mail.py check --max-error-bytes`（插件经 `limits.checker.maxErrorBytes` 传入）：
+  checker 的 `error` 字段按字节裁剪，避免超过插件上限被记为 `invalid_fields`。
+- `mailbox_core` 包与 `examples/` 目录（见上）。
+- Node 新增测试覆盖：`--max-error-bytes` 透传、examples 新路径、mailbox 结构
+  存在性、以及上述修复的回归用例。
+
+### Fixed
+
+- 修复 `--max-message-bytes` / `--max-notify` / `--max-error-bytes` / `--remind-minutes`
+  显式传 0/负数时的语义不一致：现在统一 clamp 到合法区间（message ≥256、
+  error ≥64、notify 1–100、remind ≥1 分钟）；None/非数字才回退默认值。
+- 修复旧 `source` 值为大写/带空白时不会被归一化的问题（现在任何非精确
+  `ok`/`risk` 的值都会被收敛）。
+- 修复 `mark` 部分成功后才报错导致的状态半更新（见 Changed）。
+- 修复 `read` 对带内联附件的 multipart 邮件可能把附件正文当成正文输出的问题。
+- 修复 `attach` 对恶意文件名（路径分隔符、控制字符、超长）的处理。
+- 修复 mailbox preset 在极端配置下（错误信息很长时）被插件判成
+  `invalid_fields` 的问题：
+  - checker 的**错误附注**（同轮 FETCH 失败 + 解析失败等）现在也按
+    `--max-error-bytes` 裁剪；此前附注可能超过插件上限，`notify=true` 时会导致
+    整条通知被丢弃（而 `touch_notified` 已推进，邮件要等下一个提醒周期）。
+  - 新增 `--max-error-bytes` 透传（见 Added/Changed）。
+- 修复通知的新信/待处理分类：改为按「是否曾通知过」（`last_notified_at`）划分，
+  不再按「本轮是否新插入」。此前达到 `--max-notify` 或单轮 FETCH 上限被截断的
+  邮件，下一轮会出现在「待处理（已通知但未标记）」下、甚至出现「0 封新信」的
+  误导性头部。
+- 修复 `read` 正文上限按字符裁剪导致 CJK 正文输出可达 ~192KB 的问题：改为按
+  UTF-8 字节裁剪到 64KiB。
+- 加固 allowlist 文件锁：stale 锁接管前再次核对 inode/mtime，释放时只删除仍指向
+  自己 inode 的锁文件，降低并发接管竞态下丢失更新的概率。
+- 加固 `attach` 文件名冲突处理：dangling symlink 也视为已占用，不再跟随符号链接
+  写出输出目录。
+- `mark` 在极端情况下（状态行被并发删除/SQLite 触发器忽略）会向 stderr 报告实际
+  更新行数，而不是无条件宣称成功。
+- 修复单轮 FETCH 上限可能“饿死”后续新邮件的问题：FETCH 失败不再占满“成功处理”
+  配额（每轮保留有限重试余量），前 N 个 UID 持续失败时后面的新邮件仍能逐轮推进。
+- `file_lock` 修复悬空符号链接导致的忙等（不再绕过超时）；stale 锁接管与释放都做
+  inode 校验，释放时不会误删已被接管的锁。
+- `allow` 安全加固：默认 allowlist 路径下先确保 stateDir 0700；allowlist 用唯一
+  临时文件 + `O_EXCL` 0600 原子写入（不再跟随可预测 `.tmp` 符号链接），最终文件
+  再次 chmod 0600；`--add-allow-account ""` 现在报“地址不合法”而不是静默走删除分支；
+  `load_allow_file` 的非法地址错误文案恢复为 `允许名单地址不合法:`。
+- `clip_utf8` 对孤立 surrogate（surrogateescape 参数/异常来源数据）不再抛
+  UnicodeEncodeError，checker JSON 与通知不会因编码错误整条丢失。
+- `read` 正文选择把“带 filename 但无 Content-Disposition”的 text/plain 视为附件，
+  优先输出真正的正文 part；正文上限仍按 UTF-8 字节 64KiB。
+- `attach` 文件名改为按 UTF-8 字节（≤200B，保留扩展名）限长，避免 Linux ext4
+  NAME_MAX 下 `ENAMETOOLONG`；碰撞名同样限长。
+- `records.list_messages(status=...)` 对非法状态值改为抛 `MailboxError`（不再静默
+  返回全部行）；每次 check 会更新当前 scope 的 `updated_at`，UIDVALIDITY 回退时
+  `status`/`list` 显示当前 scope 而不是旧 scope。
+- Node 侧独立审查修复：
+  - **P1 数据丢失**：`syncMailboxSkill` 的目录合并遇到已存在同名子目录时原先直接
+    跳过，恢复/归档后删除源目录会丢失其中未合并的文件；改为递归合并（文件默认
+    不覆盖），restore/disable 两个方向都有回归测试。
+  - **P2**：`getCompensations()` 查询失败不再被当成“没有历史失败”——保留失败
+    计数（不无补偿清零）并 warn，下一轮再补。
+  - **P2 权限**：`watch.db` 及新建父目录按 0700 创建、DB/WAL/SHM 尽力 chmod 0600
+    （已有目录不改权限），避免 `runs.message` 中的 checker 输出（mailbox 通知含
+    发件人/主题）在共享 `DSH_HOME`/显式 `dbFile` 下被其他本地用户读取。
+- 文档审查修正（独立审查发现）：`last_error` 受 `hours` 窗口限制、`error` 仅
+  `notify=true` 时进唤醒消息、preset 校验对象、`maxMessageBytes` 受
+  `maxStdoutBytes` 约束、安装 prompt 按“有无受管 profile”分流、回滚 0.3.0 后需
+  重发 `/watch-reload`、Date 缺失/prune 重通知边界、迁移 pending 的 scope 条件、
+  read 64KiB 字节口径、stderr 与 JSON error 去向、watch.db 权限说明等。
+
+### Tests
+
+- Python：262 个测试（`unittest`，3.9.6 与 3.12.10 双绿），覆盖原
+  48 个用例的全部行为并新增包级单测。
+- Node：114 个测试（Node 24.21，11 个测试文件，`node --test test/*.test.mjs` 全绿）。
+- 回归保障：checker error 裁剪（含附注）、FETCH 上限与失败不饿死后续新信、mark
+  原子性、source 归一化、attach 文件名（含符号链接/UTF-8 字节限长）、allowlist
+  权限与锁、read 正文选择/字节上限、通知新信分类、UIDVALIDITY 回退 scope；Node
+  侧 `--max-error-bytes` 透传、mailbox-skill 递归合并、补偿查询失败保留计数、
+  watch.db 权限、大参数分块、JS↔Python argv 互验均有专门用例。
+- 重构过程另做了一次**差分核对**（脚本不随包）：用 git HEAD 的旧单文件实现与新实现
+  在 8 组核心场景（baseline、新信、提醒、SEARCH/FETCH 失败、allowlist 收紧、旧邮件、
+  UIDVALIDITY 变更、`--notify-existing`、reply）下逐项比较 stdout JSON、DB 状态、
+  `list`/`status` 输出与 reply 邮件头，3.12/3.9 下均一致（重构不改变既有语义）。
+
+### Docs
+
+- `README.md` 重写为面向用户的项目入口（定位、最短上手、配置/checker 契约、
+  行为边界、兼容性）；安装细节移到新的 `install.md`。
+- 新增 `install.md`：三条安装入口（Web 插件页 / Creator + plugin_manager /
+  手动兜底）、可复制的 agent 安装 prompt、安装后验证清单、升级/卸载/排障。
+- `docs/development.md` 重写：新增「项目性质与测试边界」章节（典型场景、独立
+  审查者不应过度理解的边界、测试覆盖与不覆盖的范围）；更新 Node/Python 模块表、
+  架构、数据模型、调度/投递语义、已知缺陷与取舍、发布流程。
+- `extension/mailbox/README.md` 重写：新目录结构、CLI 全表、状态机/保留期/权限/
+  UIDVALIDITY/并发假设、来源 OK/RISK、注入防护、附件与用户文件规则、排障；
+  去掉旧文重复段落。
+- `skills/watch-kit/SKILL.md`、`extension/mailbox/skills/watch-mailbox/SKILL.md`
+  更新到 v0.3.1 的结构与路径，行为语义不变。
+- `package.json`：版本 0.3.1；`files` 增加 `install.md`；新增 `test:python` /
+  `test:all` 脚本；keywords 补充 mailbox/imap/python。
+
+### Upgrade
+
+- 不需要迁移运行时数据：watch.db 与 mailbox 状态库 schema 未变；`/watch-reload`
+  与现有 `watches.json` 无需修改即可继续使用。
+- 如果你在脚本/文档里引用了随包模板的旧路径，请改用
+  `extension/mailbox/examples/` 下的新路径。
+- `mail.py` 仍是唯一调用入口（`preset: "mailbox"` 生成的 argv 不变，仅追加可选的
+  `--max-error-bytes`）。升级后建议执行一次 `selfcheck` 或等一轮 `check`，
+  并用 `watch_runs` 确认没有新的 `invalid_fields`。
+
 ## 0.3.0 — 2026-10-28
 
 ### Changed

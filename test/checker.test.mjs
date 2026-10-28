@@ -107,10 +107,49 @@ test('configured byte limits override the exported defaults', async () => {
     parseCheckerOutput({ stdout: '{"notify":true,"message":"123456"}', limits: caps }).status,
     'invalid_fields',
   )
+  // error 上限同理：v0.3.1 Python checker 会按 --max-error-bytes 裁剪，JS 侧仍做最终校验。
+  assert.equal(parseCheckerOutput({ stdout: '{"notify":false,"error":"1234"}', limits: caps }).status, 'ok')
+  assert.equal(parseCheckerOutput({ stdout: '{"notify":false,"error":"12345"}', limits: caps }).status, 'invalid_fields')
   const subprocess = makeFakeSubprocess([{ stdout: '{"notify":false}' }])
   await runChecker({ subprocess, watch: WATCH, argv: ARGV, configDir: '/cfg', limits: caps })
   assert.equal(subprocess.spawns[0].stdio.stdout.maxBytes, 80)
   assert.equal(subprocess.spawns[0].stdio.stderr.maxBytes, 40)
+})
+
+test('unreadable collected streams are treated as empty output instead of throwing', async () => {
+  const throwingCollected = {
+    spawn() {
+      return {
+        done: Promise.resolve({ exitCode: 0, signal: null }),
+        terminate() {},
+        get collected() {
+          throw new Error('collected unavailable')
+        },
+      }
+    },
+  }
+  const result = await runChecker({ subprocess: throwingCollected, watch: WATCH, argv: ARGV, configDir: '/cfg' })
+  assert.equal(result.status, 'invalid_json', 'no stdout means invalid_json, not a thrown error')
+  assert.equal(result.stdout, '')
+  assert.equal(result.stderr, '')
+  assert.ok(Number.isFinite(result.durationMs) && result.durationMs >= 0, 'durationMs is a finite non-negative number')
+
+  const throwingRead = {
+    spawn() {
+      return {
+        done: Promise.resolve({ exitCode: 0, signal: null }),
+        terminate() {},
+        collected: {
+          stdout: { readFrom() { throw new Error('read boom') } },
+          stderr: { readFrom() { throw new Error('read boom') } },
+        },
+      }
+    },
+  }
+  const second = await runChecker({ subprocess: throwingRead, watch: WATCH, argv: ARGV, configDir: '/cfg' })
+  assert.equal(second.status, 'invalid_json')
+  assert.equal(second.stdout, '')
+  assert.equal(second.stderr, '')
 })
 
 test('spawn failure is classified as spawn_error (thrown or empty argv)', async () => {
@@ -146,6 +185,6 @@ test('timeout terminates the checker and is classified as timeout', async () => 
   const result = await run(subprocess, { watch: { timeoutMs: 15 } })
   assert.equal(result.status, 'timeout')
   assert.equal(terminated, 1)
-  assert.ok(result.durationMs >= 0)
+  assert.ok(Number.isFinite(result.durationMs) && result.durationMs >= 0, 'durationMs is a finite non-negative number')
 })
 

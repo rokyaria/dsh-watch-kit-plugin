@@ -5,7 +5,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { stat } from 'node:fs/promises'
+import { chmod, mkdir, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
@@ -168,7 +168,7 @@ test('recordRun stores the run and markRunsDelivered flips delivered', async () 
   })
 })
 
-test('delivery failure counters and success clearing: count/streak/first-fail/error, notified timestamp, clearFailureIds (F-12)', async () => {
+test('delivery failure counters and success clearing: count/streak/first-fail/error, notified timestamp, clearFailureIds', async () => {
   await withDb(async (db, file) => {
     db.applyConfig([watchEntry({ id: 'a' }), watchEntry({ id: 'b' }), watchEntry({ id: 'c' })], NOW)
     db.recordDeliveryFailure(['a'], 'first error', NOW + 1_000)
@@ -327,7 +327,7 @@ test('runsReport last_error only reflects non-ok runs inside the requested windo
   })
 })
 
-test('runsReport counts ok-run checker errors and lets hard failures win last_error (F-07)', async () => {
+test('runsReport counts ok-run checker errors and lets hard failures win last_error', async () => {
   // checker 合法输出 {"notify":false,"error":"..."} 时 run 仍记 status='ok'（如 mailbox 的
   // IMAP/认证故障），error 不能因为不是硬失败而在 watch_runs 里消失。
   await withDb(async (db) => {
@@ -367,6 +367,106 @@ test('runsReport counts ok-run checker errors and lets hard failures win last_er
   })
 })
 
+test('applyConfig with more entries than the SQLite parameter limit (33k) keeps soft-delete semantics', async () => {
+  await withDb(async (db, file) => {
+    const bulk = (index, overrides = {}) => watchEntry({ id: `bulk-${String(index).padStart(5, '0')}`, ...overrides })
+    const entries = Array.from({ length: 33_000 }, (_, index) => bulk(index))
+    const started = Date.now()
+    // 33k 个 id 的 `id NOT IN (...)` 会超过 SQLite 默认 32766 个绑定参数；回归旧实现会抛
+    // "too many SQL variables" 使 /watch-reload 整份配置无法生效。
+    assert.deepEqual(db.applyConfig(entries, NOW), { added: 33_000, updated: 0, deleted: 0 })
+    assert.ok(Date.now() - started < 5_000, `33k-entry reload stays fast (${Date.now() - started}ms)`)
+
+    // 大配置缩减到 1 条：其余全部软删除（逐行路径），既有行不误删。
+    assert.deepEqual(db.applyConfig([bulk(0)], NOW + 1), { added: 0, updated: 1, deleted: 32_999 })
+    assert.equal(db.getWatch('bulk-00000').isDeleted, false)
+    assert.equal(db.getWatch('bulk-00000').updatedAt, NOW + 1)
+    assert.equal(db.getWatch('bulk-32999').isDeleted, true)
+    assert.equal(rawQuery(file, 'SELECT COUNT(*) AS c FROM watches')[0].c, 33_000, 'soft delete keeps rows')
+    assert.equal(rawQuery(file, 'SELECT COUNT(*) AS c FROM watches WHERE is_deleted = 0')[0].c, 1)
+  })
+})
+
+test('multi-id bookkeeping statements above the SQLite parameter limit use chunks', async () => {
+  await withDb(async (db, file) => {
+    // 905 个真实 watch 行 > SQL_CHUNK_SIZE(900)：跨分块边界验证记账语句与查询结果。
+    const count = 905
+    const ids = Array.from({ length: count }, (_, index) => `bulk-${String(index).padStart(4, '0')}`)
+    db.applyConfig(ids.map((id) => watchEntry({ id })), NOW)
+    db.recordDeliveryFailure(ids, 'bulk delivery failure', NOW - 3_600_000)
+    assert.equal(
+      rawQuery(file, 'SELECT COUNT(*) AS c FROM watches WHERE delivery_fail_streak > 0')[0].c,
+      count,
+      'every real watch got its failure counters',
+    )
+
+    // getCompensations：905 个真实 id 跨块查询后仍按 ORDER BY id 返回全部记录。
+    const compensations = db.getCompensations([...ids].reverse())
+    assert.equal(compensations.length, count, 'all real compensation rows are returned across chunks')
+    assert.deepEqual(compensations.map((item) => item.id), ids, 'results are globally ordered by id')
+    assert.equal(compensations[0].count, 1)
+    assert.equal(compensations[0].error, 'bulk delivery failure')
+
+    // markRunsDelivered：905 个真实 run 行跨块更新。
+    const runIds = ids.map((id) => db.recordRun({
+      watchId: id, startedAt: NOW, finishedAt: NOW, status: 'ok', notify: true, message: 'event', durationMs: 1,
+    }))
+    assert.equal(runIds.length, count)
+    db.markRunsDelivered(runIds)
+    assert.equal(rawQuery(file, 'SELECT COUNT(*) AS c FROM runs WHERE delivered = 1')[0].c, count)
+    assert.equal(rawQuery(file, 'SELECT COUNT(*) AS c FROM runs WHERE delivered = 0')[0].c, 0)
+
+    // markWatchesNotified：905 个真实 watch 行跨块更新。
+    db.markWatchesNotified([...ids].reverse(), NOW + 5)
+    assert.equal(rawQuery(file, 'SELECT COUNT(*) AS c FROM watches WHERE last_notify_at = ?', NOW + 5)[0].c, count)
+
+    // clearDeliveryFailures：905 个真实 watch 行跨块清零。
+    db.clearDeliveryFailures(ids)
+    assert.equal(rawQuery(file, 'SELECT COUNT(*) AS c FROM watches WHERE delivery_fail_streak <> 0')[0].c, 0)
+    assert.equal(rawQuery(file, 'SELECT COUNT(*) AS c FROM watches WHERE delivery_fail_count <> 0')[0].c, 0)
+    assert.equal(rawQuery(file, 'SELECT COUNT(*) AS c FROM watches')[0].c, count, 'no rows are lost or duplicated')
+  })
+})
+
+test('fresh DB tightens file/dir permissions; existing dirs are left untouched (POSIX)', {
+  skip: process.platform === 'win32' ? 'chmod semantics are platform-specific on Windows' : false,
+}, async () => {
+  const dir = await makeTmp()
+  try {
+    const modeOf = async (path) => (await stat(path)).mode & 0o777
+    const dbFile = join(dir, 'nested', 'deeper', 'watch.db')
+    const db = new WatchDB(dbFile)
+    try {
+      assert.equal(await modeOf(dbFile), 0o600, 'new watch.db is 0600')
+      assert.equal(await modeOf(join(dir, 'nested', 'deeper')), 0o700, 'created parent dir is 0700')
+      assert.equal(await modeOf(join(dir, 'nested')), 0o700, 'every created ancestor is 0700')
+      // 写入后 WAL/SHM 由 SQLite 创建：同样不能是 0644（runs.message 含通知内容）。
+      db.applyConfig([watchEntry({ id: 'a' })], NOW)
+      for (const suffix of ['-wal', '-shm']) {
+        const path = `${dbFile}${suffix}`
+        assert.equal(await exists(path), true, `${suffix} exists while the connection is open`)
+        assert.equal(await modeOf(path), 0o600, `${suffix} is 0600`)
+      }
+    } finally {
+      db.close()
+    }
+
+    // 已存在的目录权限不被改写（mkdir 的 mode 只作用于新建目录）。
+    const existingDir = join(dir, 'existing')
+    await mkdir(existingDir, { recursive: true, mode: 0o755 })
+    await chmod(existingDir, 0o755)
+    const second = new WatchDB(join(existingDir, 'watch.db'))
+    try {
+      assert.equal(await modeOf(existingDir), 0o755, 'existing parent dir mode is untouched')
+      assert.equal(await modeOf(join(existingDir, 'watch.db')), 0o600, 'DB file itself is still tightened')
+    } finally {
+      second.close()
+    }
+  } finally {
+    await cleanup(dir)
+  }
+})
+
 test('opening a DB refuses newer schema versions and upgrades user_version 0 to 1', async () => {
   const dir = await makeTmp()
   try {
@@ -386,6 +486,47 @@ test('opening a DB refuses newer schema versions and upgrades user_version 0 to 
     } finally {
       db.close()
     }
+  } finally {
+    await cleanup(dir)
+  }
+})
+
+test('a rejected newer schema version closes the opened connection instead of leaking it', async () => {
+  const dir = await makeTmp()
+  const file = join(dir, 'future-schema.db')
+  try {
+    const future = new DatabaseSync(file)
+    future.exec('PRAGMA user_version = 99')
+    future.close()
+
+    // 不新增内部接口：直接监视 DatabaseSync.prototype.close，证明失败路径关闭了已打开的连接。
+    const originalClose = DatabaseSync.prototype.close
+    let closeCalls = 0
+    DatabaseSync.prototype.close = function close(...args) {
+      closeCalls += 1
+      return originalClose.apply(this, args)
+    }
+    try {
+      assert.throws(
+        () => new WatchDB(file),
+        (error) => /不支持的数据库 schema 版本 99/.test(String(error?.message)),
+        'future schema is rejected with the documented error',
+      )
+    } finally {
+      DatabaseSync.prototype.close = originalClose
+    }
+    assert.equal(closeCalls, 1, 'the opened connection is closed exactly once on the failure path')
+
+    // 失败路径不会把进程/文件卡住：同一路径随后仍可正常打开读取。
+    const reopened = new DatabaseSync(file)
+    try {
+      assert.equal(Number(reopened.prepare('PRAGMA user_version').get().user_version), 99)
+    } finally {
+      reopened.close()
+    }
+    // Windows 上句柄泄漏通常会让文件删不掉；POSIX 恒可删除，这里顺带验证失败路径可清理。
+    await rm(file, { force: true })
+    assert.equal(await exists(file), false, 'the rejected DB file is removable afterwards')
   } finally {
     await cleanup(dir)
   }

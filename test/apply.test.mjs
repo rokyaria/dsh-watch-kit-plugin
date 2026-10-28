@@ -8,6 +8,7 @@
 import assert from 'node:assert/strict'
 import { mkdir, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
 import { apply, Config, inject, name } from '../lib/index.js'
 import { WatchDB } from '../lib/db.js'
@@ -114,7 +115,7 @@ test('apply forwards configurable checker limits to the spawned checker', async 
   })
 })
 
-test('apply forwards limits.checker.maxMessageBytes into mailbox preset argv on /watch-reload', async () => {
+test('apply forwards limits.checker.maxMessageBytes/maxErrorBytes into mailbox preset argv on /watch-reload', async () => {
   await withDshHome(async (home) => {
     const { configFile, dbFile } = defaultPaths(home)
     const envFile = join(home, 'mail.env')
@@ -136,12 +137,16 @@ test('apply forwards limits.checker.maxMessageBytes into mailbox preset argv on 
       ],
     })
     const host = makeHostCtx({ subprocess: makeFakeSubprocess([]) })
-    await apply(host.ctx, { limits: { checker: { maxMessageBytes: 4096 } } })
+    await apply(host.ctx, { limits: { checker: { maxMessageBytes: 4096, maxErrorBytes: 512 } } })
     try {
       const result = await host.state.commands[0].handler({ agent: { id: 'session-1' } })
       assert.equal(result.kind, 'success', result.text)
       const checker = JSON.parse(rawGet(dbFile, 'SELECT checker FROM watches WHERE id = ?', 'mailbox').checker)
       assert.equal(checker[checker.indexOf('--max-message-bytes') + 1], '4096')
+      assert.equal(checker[checker.indexOf('--max-error-bytes') + 1], '512')
+      // 新参数追加在 --folder 之后，既有位置不变（mail.py 前 8 个 argv 位置稳定）。
+      assert.deepEqual(checker.slice(2, 8), ['check', '--json', '--env-file', envFile, '--state-dir', stateDir])
+      assert.equal(checker[checker.length - 2], '--max-error-bytes')
     } finally {
       host.disposeAll()
     }
@@ -228,9 +233,22 @@ test('apply closes the poller/DB and rejects when command registration throws', 
   await withDshHome(async () => {
     const host = makeHostCtx({ subprocess: makeFakeSubprocess([]) })
     host.ctx.commands.register = () => { throw new Error('commands unavailable') }
-    await assert.rejects(async () => apply(host.ctx, {}), /commands unavailable/)
+    // 监视 DatabaseSync.prototype.close：注册失败路径必须真正关闭 apply 打开的连接（不泄漏句柄）。
+    const originalClose = DatabaseSync.prototype.close
+    let successfulCloses = 0
+    DatabaseSync.prototype.close = function close(...args) {
+      const value = originalClose.apply(this, args)
+      successfulCloses += 1
+      return value
+    }
+    try {
+      await assert.rejects(async () => apply(host.ctx, {}), /commands unavailable/)
+    } finally {
+      DatabaseSync.prototype.close = originalClose
+    }
     assert.equal(host.state.intervals.length, 0, 'no poll interval registered after the failure')
     assert.equal(host.state.tools.length, 0, 'tools not registered after the command failure')
+    assert.equal(successfulCloses, 1, 'the DB connection opened by apply is closed exactly once on the failure path')
     host.disposeAll() // must stay a safe no-op
   })
 })

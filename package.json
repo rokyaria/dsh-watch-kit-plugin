@@ -1,6 +1,6 @@
 {
   "name": "dsh-watch-kit-plugin",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Minimal SQLite-backed watch scheduler for DeepSeek Harness: polls checkers and wakes the bound session only when a checker returns a notify event.",
   "keywords": [
     "dsh",
@@ -9,7 +9,11 @@
     "watch",
     "watcher",
     "polling",
-    "sqlite"
+    "sqlite",
+    "mailbox",
+    "imap",
+    "python",
+    "email-checker"
   ],
   "license": "MIT",
   "author": "rokyaria",
@@ -53,6 +57,7 @@
     "locale",
     "icon.svg",
     "cordis.patch.yml",
+    "install.md",
     "CHANGELOG.md",
     "README.md",
     "docs",
@@ -61,6 +66,8 @@
   ],
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "test:mailbox": "python3 -m unittest discover -s test/python -v"
+    "test:mailbox": "python3 -m unittest discover -s test/python -v",
+    "test:python": "python3 -m unittest discover -s test/python -v",
+    "test:all": "node --test test/*.test.mjs && python3 -m unittest discover -s test/python -v"
   }
 }

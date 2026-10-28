@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { registerTools } from '../lib/tools.js'
-import { cleanup, makeHostCtx, makeSession, makeTmp, openDb, watchEntry } from './helpers/harness.mjs'
+import { cleanup, makeHostCtx, makeSession, makeTmp, openDb, rawRun, watchEntry } from './helpers/harness.mjs'
 
 const HOUR = 3_600_000
 
@@ -113,7 +113,7 @@ test('watch_runs aggregates contract counters and includes enabled zero-run watc
   })
 })
 
-test('watch_runs rendering: empty state, table header, clipped last_error and checker errors (F-07)', async () => {
+test('watch_runs rendering: empty state, table header, clipped last_error and checker errors', async () => {
   await withTools({}, async ({ db, tools }) => {
     const tool = toolNamed(tools, 'watch_runs')
     assert.match(rendered(tool, { hours: 3, since: Date.now(), watches: [] }), /没有 watch 执行记录/)
@@ -199,5 +199,41 @@ test('watch_sessions caps at 50 (truncated) and degrades gracefully when list fa
     assert.equal(value.truncated, false)
     assert.match(value.error, /session list boom/)
     assert.match(rendered(tool, value), /查询会话失败：session list boom/)
+  })
+})
+
+test('watch_runs rendering degrades corrupted timestamps and never splits surrogate pairs', async () => {
+  await withTools({}, async ({ db, file, tools }) => {
+    const tool = toolNamed(tools, 'watch_runs')
+    const now = Date.now()
+    db.applyConfig([watchEntry({ id: 'broken' }), watchEntry({ id: 'corrupt-time' })], now)
+
+    // 超出 ECMAScript Date 范围的时间戳：直接 toISOString 会抛 RangeError，render 必须回退 '-'。
+    rawRun(file, 'UPDATE watches SET last_run_at = ?, last_notify_at = ? WHERE id = ?', 9e15, 9e15, 'corrupt-time')
+    // lastError 的 100 字符截断点落在代理对（emoji）中间：不能留下孤立代理字符。
+    db.recordRun({
+      watchId: 'broken',
+      startedAt: now - 1_000,
+      finishedAt: now - 1_000,
+      status: 'spawn_error',
+      notify: false,
+      durationMs: 1,
+      error: `${'x'.repeat(99)}😀tail`,
+    })
+
+    const value = await tool.execute({ hours: 1 })
+    const text = rendered(tool, value)
+    assert.equal(text.isWellFormed(), true, 'no lone surrogate from clipping the emoji error')
+
+    const rowOf = (id) => text.split('\n').find((line) => line.startsWith(`${id} |`))
+    const broken = rowOf('broken').split(' | ')
+    assert.equal(broken[10], '-', 'corrupt last_run_at renders as dash')
+    assert.equal(broken[11], '-', 'corrupt last_notify_at renders as dash')
+    assert.ok(broken[12].includes(`${'x'.repeat(99)}😀…`), 'the emoji at the 100-char clip boundary is kept intact')
+
+    const corrupt = rowOf('corrupt-time').split(' | ')
+    assert.equal(corrupt[10], '-')
+    assert.equal(corrupt[11], '-')
+    assert.equal(corrupt[12], '-', 'missing last_error renders as dash')
   })
 })

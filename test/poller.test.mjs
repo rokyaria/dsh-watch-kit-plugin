@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { Poller } from '../lib/poller.js'
-import { RENDER_HEADROOM_BYTES } from '../lib/render.js'
+import { MAX_MERGED_ITEMS, RENDER_HEADROOM_BYTES } from '../lib/render.js'
 import {
   cleanup, makeFakeSubprocess, makeLogger, makeSession, makeTmp, openDb, rawQuery, watchEntry, waitFor,
 } from './helpers/harness.mjs'
@@ -308,7 +308,7 @@ test('each poll cleans runs older than the retention window', async () => {
   })
 })
 
-test('M1: only events included in the merged message are marked delivered/notified', async () => {
+test('only events included in the merged message are marked delivered/notified', async () => {
   const subprocess = makeFakeSubprocess((spec) => ({
     stdout: JSON.stringify({ notify: true, message: `event ${spec.env.WATCH_ID}` }),
   }))
@@ -342,7 +342,7 @@ test('M1: only events included in the merged message are marked delivered/notifi
   })
 })
 
-test('M2: a recordRun failure is logged and does not abort the round or delivery', async () => {
+test('a recordRun failure is logged and does not abort the round or delivery', async () => {
   const subprocess = makeFakeSubprocess((spec) => ({
     stdout: JSON.stringify({ notify: true, message: `event ${spec.env.WATCH_ID}` }),
   }))
@@ -397,6 +397,49 @@ test('delivery bookkeeping is atomic: a failed notify write leaves runs undelive
   })
 })
 
+test('a failed compensation lookup preserves failure counters instead of clearing them without rendering', async () => {
+  const subprocess = makeFakeSubprocess([
+    { stdout: '{"notify":true,"message":"first event"}' },
+    { stdout: '{"notify":true,"message":"second event"}' },
+  ])
+  await withPoller({ subprocess }, async ({ poller, db, file, deliverCalls, logger, clock }) => {
+    db.applyConfig([watchEntry({ id: 'a' })], NOW)
+    db.recordDeliveryFailure(['a'], 'earlier delivery failure', NOW - 3_600_000)
+
+    const original = db.getCompensations.bind(db)
+    db.getCompensations = () => { throw new Error('compensation query boom') }
+    try {
+      await poller.poll()
+    } finally {
+      db.getCompensations = original
+    }
+
+    assert.equal(deliverCalls.length, 1, 'the event itself is still delivered')
+    assert.equal(deliverCalls[0].text.includes('[投递失败补偿]'), false, 'no compensation could be rendered')
+    const watch = db.getWatch('a')
+    assert.equal(watch.lastNotifyAt, NOW, 'delivery/notify accounting still happens')
+    // 关键回归：查询失败不能被当成“没有历史失败”而清空计数——否则失败记录永久消失且无补偿。
+    assert.equal(watch.deliveryFailCount, 1, 'failure count is preserved')
+    assert.equal(watch.deliveryFailStreak, 1, 'failure streak is preserved')
+    assert.equal(watch.lastDeliveryError, 'earlier delivery failure')
+    assert.ok(
+      logger.lines.some((line) => line.level === 'warn' && /读取投递失败补偿记录失败/.test(line.message)),
+      'the compensation query failure is logged as a warning',
+    )
+    assert.equal(rawQuery(file, 'SELECT COUNT(*) AS c FROM runs')[0].c, 1, 'the event run is recorded exactly once')
+
+    // 下一轮查询恢复后，历史失败仍会被一次性补偿并清零。
+    clock.value += MINUTE + 1
+    await poller.poll()
+    assert.equal(deliverCalls.length, 2)
+    assert.match(deliverCalls[1].text, /\[投递失败补偿\]/)
+    assert.match(deliverCalls[1].text, /投递失败 1 次/)
+    const recovered = db.getWatch('a')
+    assert.equal(recovered.deliveryFailCount, 0)
+    assert.equal(recovered.deliveryFailStreak, 0)
+  })
+})
+
 test('stale events are dropped when the watch is deleted/disabled/retargeted between claim and delivery', async () => {
   const subprocess = makeFakeSubprocess((spec) => ({
     stdout: JSON.stringify({ notify: true, message: `event ${spec.env.WATCH_ID}` }),
@@ -435,6 +478,35 @@ test('poller defaults deliveryTimeoutMs to 30s and falls back for invalid values
   assert.equal(new Poller({ deliveryTimeoutMs: 0 }).deliveryTimeoutMs, 30_000)
   assert.equal(new Poller({ deliveryTimeoutMs: Number.NaN }).deliveryTimeoutMs, 30_000)
   assert.equal(new Poller({ deliveryTimeoutMs: 1200 }).deliveryTimeoutMs, 1200)
+})
+
+test('message maxItems is normalized the same way as the renderer', () => {
+  assert.equal(new Poller({}).maxMergedItems, MAX_MERGED_ITEMS)
+  assert.equal(new Poller({ messageLimits: { maxItems: 5 } }).maxMergedItems, 5)
+  assert.equal(new Poller({ messageLimits: { maxItems: 7.9 } }).maxMergedItems, 7)
+  // Config 保证 min 1；直接构造时 0/负数按 1（不再静默退回默认 20），NaN/缺失回退默认。
+  assert.equal(new Poller({ messageLimits: { maxItems: 0 } }).maxMergedItems, 1)
+  assert.equal(new Poller({ messageLimits: { maxItems: -3 } }).maxMergedItems, 1)
+  assert.equal(new Poller({ messageLimits: { maxItems: Number.NaN } }).maxMergedItems, MAX_MERGED_ITEMS)
+})
+
+test('dispose before the first poll closes the DB immediately and exactly once', async () => {
+  await withPoller({}, async ({ poller, db }) => {
+    let closeCalls = 0
+    const originalClose = db.close.bind(db)
+    db.close = () => {
+      closeCalls += 1
+      originalClose()
+    }
+    poller.dispose()
+    assert.equal(poller.stopped, true)
+    assert.equal(closeCalls, 1, 'no in-flight round means an immediate close')
+    poller.dispose()
+    assert.equal(closeCalls, 1, 'dispose is idempotent')
+    await withDeadline(poller.poll(), 500, 'stopped poll')
+    assert.equal(closeCalls, 1, 'a stopped poller never closes again')
+    assert.throws(() => db.getWatch('a'), /database|closed|not open/i)
+  })
 })
 
 test('delivery timeout: a hung deliver fails the round, the next round recovers and a late rejection is swallowed', { timeout: 10_000 }, async () => {
@@ -577,7 +649,7 @@ test('dispose: a delivery timeout after the forced DB close is only a bookkeepin
   })
 })
 
-test('F-12: only represented compensations clear failure counters; a watch dropped to keep compensation complete keeps its counters', async () => {
+test('only represented compensations clear failure counters; a watch dropped to keep compensation complete keeps its counters', async () => {
   // 默认 maxBytes=16KB 的实际上限为 20KB；消息保持 ~860B，
   // 让 w18 因「补偿段优先完整」被丢弃，从而验证被丢事件不清失败计数。
   const subprocess = makeFakeSubprocess((spec) => ({
@@ -618,7 +690,7 @@ test('F-12: only represented compensations clear failure counters; a watch dropp
   })
 })
 
-test('R-01: with maxBytes=8192 a large event and its compensation are both delivered via the 4096B headroom', async () => {
+test('with maxBytes=8192 a large event and its compensation are both delivered via the 4096B headroom', async () => {
   // 端到端：8192（合法最小值）+ 8000B 事件 + 该 watch 有 1 次历史投递失败。
   // 实际上限=8192+4096=12288：事件与补偿段同一条消息投递，失败计数正常清零。
   const longError = 'gateway/internal error '.repeat(8)

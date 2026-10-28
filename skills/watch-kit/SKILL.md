@@ -9,22 +9,22 @@ description: "dsh-watch-kit-plugin 使用入口：watch 配置（用户级 ~/.ds
 
 ## 先读文档，不要猜旧命令
 
-完整用法：
+完整用法（README）：https://github.com/rokyaria/dsh-watch-kit-plugin/blob/main/README.md
 
-https://github.com/rokyaria/dsh-watch-kit-plugin/blob/main/README.md
-
-开发/架构说明：仓库内 `docs/development.md`。
+- 安装/升级/卸载：同仓库 `install.md`。
+- 开发/架构/测试：同仓库 `docs/development.md`。
+- 本地安装副本通常链接在 `~/.dsh/profiles/*/node_modules/dsh-watch-kit-plugin/`，包内同样带 `README.md`、`install.md`、`docs/`。
 
 先读 README，再按用户的实际目标操作；不要凭空发明命令或沿用 v0.1 的旧命令。
 
-## 当前版本（0.3.0）的对外表面
+## 当前版本（0.3.1）的对外表面
 
 - 配置：`<dshHome>/watch/watches.json`（默认 `~/.dsh/watch/watches.json`）；`configFile`/`dbFile` 可在 profile patch 显式覆盖，相对路径按 `$DSH_HOME` 解析
 - 运行时状态：`<dshHome>/watch/watch.db`（SQLite；**用户级，不跟随工作区**；旧版 `<workspace>/.dsh/watch/` 不自动迁移，见 CHANGELOG 0.2.4）
 - 命令：只有 `/watch-reload`（由用户在输入框发送，agent 不能代发）
 - 工具：`watch_runs`（执行/通知/失败统计）、`watch_sessions`（可见会话）
 - checker：argv 直接执行；只认 stdout 的 JSON `{notify, message, error}`；插件不负责去重/重试
-- 扩展：`extension/mailbox/` 提供 mailbox checker；配置里用 `preset: "mailbox"`，不需要写 checker 路径/参数
+- 扩展：`extension/mailbox/` 提供 mailbox checker/CLI。v0.3.1 结构为极薄入口 `mail.py` + Python 实现包 `mailbox_core/` + 配置模板 `examples/` + 随包 skill；`mail.py` 的调用方式、参数、JSON 与状态语义不变。配置里用 `preset: "mailbox"`，不需要写 checker 路径/参数
 - 扩展 skill：mailbox skill **不常驻注册**——存在 `enabled: true` 的 mailbox watch 时，`/watch-reload` 把它落地到 `<dshHome>/skills/watch-mailbox/SKILL.md`（用户可直接编辑，插件不覆盖）；邮件状态在 `<stateDir>/<account>.sqlite3`（默认 `<dshHome>/mailbox/<account>.sqlite3`；SQLite，按 UID 记录，保留 31 天）；停用时整目录移入 `<dshHome>/watch/extension/skills/watch-mailbox/`，重新启用时整目录恢复（额外放入该目录的用户文件也会保留）
 
 ## 工作方式
@@ -40,4 +40,5 @@ https://github.com/rokyaria/dsh-watch-kit-plugin/blob/main/README.md
 
 - 配置：`<dshHome>/watch/watches.json`
 - DB：`<dshHome>/watch/watch.db`
-- mailbox skill：`<dshHome>/skills/watch-mailbox/SKILL.md`（停用时归档到 `<dshHome>/watch/extension/skills/watch-mailbox/`）
+- mailbox 状态库：`<dshHome>/mailbox/<account>.sqlite3`（`<stateDir>` 可配置）
+- mailbox 落地 skill：`<dshHome>/skills/watch-mailbox/SKILL.md`（停用时归档到 `<dshHome>/watch/extension/skills/watch-mailbox/`）

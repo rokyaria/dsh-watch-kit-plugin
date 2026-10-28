@@ -119,6 +119,36 @@ test('enabled：目标不存在但归档有历史副本 → 整个目录恢复�
   })
 })
 
+test('enabled：恢复归档时递归合并同名嵌套目录，不丢用户/归档文件（P1 回归）', async () => {
+  await withDshHome(async (home) => {
+    const paths = skillPaths(home)
+    // 归档：SKILL.md + assets/{archived.txt, deep/archived-deep.txt, notes.txt}
+    mkdirSync(join(paths.archiveDir, 'assets', 'deep'), { recursive: true })
+    writeFileSync(archiveFile(home), CUSTOM)
+    writeFileSync(join(paths.archiveDir, 'assets', 'archived.txt'), 'archived-file')
+    writeFileSync(join(paths.archiveDir, 'assets', 'deep', 'archived-deep.txt'), 'archived-deep')
+    writeFileSync(join(paths.archiveDir, 'assets', 'notes.txt'), 'archive-notes')
+    // 目标：缺 SKILL.md，已有同名 assets 目录与用户文件
+    mkdirSync(join(paths.targetDir, 'assets', 'deep'), { recursive: true })
+    writeFileSync(join(paths.targetDir, 'assets', 'user.txt'), 'user-file')
+    writeFileSync(join(paths.targetDir, 'assets', 'deep', 'user-deep.txt'), 'user-deep')
+    writeFileSync(join(paths.targetDir, 'assets', 'notes.txt'), 'user-notes')
+
+    const result = syncMailboxSkill({ enabled: true, dshHome: home, sourcePath: makeSource(home) })
+    assert.equal(result.status, 'restored')
+    assert.equal(readFileSync(targetFile(home), 'utf8'), CUSTOM)
+    // 目标原有文件保留。
+    assert.equal(readFileSync(join(paths.targetDir, 'assets', 'user.txt'), 'utf8'), 'user-file')
+    assert.equal(readFileSync(join(paths.targetDir, 'assets', 'deep', 'user-deep.txt'), 'utf8'), 'user-deep')
+    // 归档文件被递归合并进目标（旧实现整目录跳过 → rmSync 归档后文件丢失）。
+    assert.equal(readFileSync(join(paths.targetDir, 'assets', 'archived.txt'), 'utf8'), 'archived-file')
+    assert.equal(readFileSync(join(paths.targetDir, 'assets', 'deep', 'archived-deep.txt'), 'utf8'), 'archived-deep')
+    // 同名文件保持「不覆盖目标」语义。
+    assert.equal(readFileSync(join(paths.targetDir, 'assets', 'notes.txt'), 'utf8'), 'user-notes')
+    assert.equal(existsSync(paths.archiveDir), false, '恢复后归档清空（合并已完成，不能丢文件）')
+  })
+})
+
 test('disabled：目标存在 → 移入归档（archived），目标消失', async () => {
   await withDshHome(async (home) => {
     mkdirSync(skillPaths(home).targetDir, { recursive: true })
@@ -154,6 +184,34 @@ test('disabled：目标没有 SKILL.md 时不会用空目录覆盖最后一份�
     assert.equal(result.status, 'archived')
     assert.equal(readFileSync(archiveFile(home), 'utf8'), 'last-user-edit\n')
     assert.equal(readFileSync(join(paths.archiveDir, 'extra.txt'), 'utf8'), 'target-extra')
+    assert.equal(existsSync(paths.targetDir), false)
+  })
+})
+
+test('disabled：归档前把目标嵌套目录递归合并进归档，不丢目标额外文件（P1 回归）', async () => {
+  await withDshHome(async (home) => {
+    const paths = skillPaths(home)
+    // 归档已有最后一份用户 SKILL.md + assets/{old.txt, notes.txt}
+    mkdirSync(join(paths.archiveDir, 'assets'), { recursive: true })
+    writeFileSync(archiveFile(home), 'last-user-edit\n')
+    writeFileSync(join(paths.archiveDir, 'assets', 'old.txt'), 'old-archive')
+    writeFileSync(join(paths.archiveDir, 'assets', 'notes.txt'), 'archive-notes')
+    // 目标缺 SKILL.md，只有额外文件：assets/{user.txt, notes.txt, deep/user-deep.txt}
+    mkdirSync(join(paths.targetDir, 'assets', 'deep'), { recursive: true })
+    writeFileSync(join(paths.targetDir, 'assets', 'user.txt'), 'user-target')
+    writeFileSync(join(paths.targetDir, 'assets', 'notes.txt'), 'target-notes')
+    writeFileSync(join(paths.targetDir, 'assets', 'deep', 'user-deep.txt'), 'user-deep')
+
+    const result = syncMailboxSkill({ enabled: false, dshHome: home })
+    assert.equal(result.status, 'archived')
+    assert.equal(readFileSync(archiveFile(home), 'utf8'), 'last-user-edit\n', '最后一份归档 SKILL.md 不被空目录覆盖')
+    // 归档原有文件保留。
+    assert.equal(readFileSync(join(paths.archiveDir, 'assets', 'old.txt'), 'utf8'), 'old-archive')
+    // 目标文件被递归合并进归档（旧实现跳过同名 assets 目录 → rmSync 目标后文件丢失）。
+    assert.equal(readFileSync(join(paths.archiveDir, 'assets', 'user.txt'), 'utf8'), 'user-target')
+    assert.equal(readFileSync(join(paths.archiveDir, 'assets', 'deep', 'user-deep.txt'), 'utf8'), 'user-deep')
+    // 同名文件不覆盖归档（归档版本优先）。
+    assert.equal(readFileSync(join(paths.archiveDir, 'assets', 'notes.txt'), 'utf8'), 'archive-notes')
     assert.equal(existsSync(paths.targetDir), false)
   })
 })

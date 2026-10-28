@@ -131,7 +131,7 @@ const LONG_ID = (index) => `w${String(index).padStart(2, '0')}-${'x'.repeat(60)}
 const CN_ERROR = '错'.repeat(128)
 const bytesOf = (text) => Buffer.byteLength(text, 'utf8')
 
-test('F-12: the 16KB worst case and a tight budget keep the whole compensation section and drop items instead', () => {
+test('the 16KB worst case and a tight budget keep the whole compensation section and drop items instead', () => {
   // 场景 1：19 个 candidates + 12 条补偿（10 行完整 + 2 条被汇总行覆盖）。
   // 默认 maxBytes=16KB 的实际上限为 16KB+4096=20KB；场景尺寸按该预算设置，
   // 验证「补偿段优先完整、放不下就丢后段 items」。
@@ -214,7 +214,7 @@ test('F-12: the 16KB worst case and a tight budget keep the whole compensation s
   assert.ok(!/…另有 \d+ 个 watch/.test(tightText), 'exactly 10 compensations need no summary line')
 })
 
-test('F-12: budget edge cases: without compensation items use the full budget; tiny maxBytes still renders the complete section', () => {
+test('budget edge cases: without compensation items use the full budget; tiny maxBytes still renders the complete section', () => {
   // 场景 1：没有补偿时 items 可用满实际上限。
   const items = [{ id: 'big-message', intervalMs: 60_000, message: 'z'.repeat(5_000) }]
 
@@ -283,7 +283,7 @@ function assertCompensationAccounting(detailed) {
   }
 }
 
-test('R-01: maxBytes=8192 + an 8000B event + its own compensation are both delivered via the 4096B headroom', () => {
+test('maxBytes=8192 + an 8000B event + its own compensation are both delivered via the 4096B headroom', () => {
   // maxBytes=8192 的实际上限为 8192+4096=12288：8000B 事件与自身补偿段同一条消息完整投递，
   // text 允许超过配置的 maxBytes（最多 +RENDER_HEADROOM_BYTES）。
   const id = 'mail-inbox'
@@ -310,7 +310,7 @@ test('R-01: maxBytes=8192 + an 8000B event + its own compensation are both deliv
   assert.equal(renderMergedMessage({ items, compensations, now: NOW, maxBytes: 8192 }), detailed.text, 'string renderer stays compatible')
 })
 
-test('R-01: when even the effective limit is exceeded, the event wins and its own compensation is deferred', () => {
+test('when even the effective limit is exceeded, the event wins and its own compensation is deferred', () => {
   // maxBytes=8192 → 实际上限=12288；事件 ~12000B + 自身补偿仍超预算 → 保事件、延后补偿。
   const id = 'mail-inbox'
   const message = 'y'.repeat(12_000)
@@ -332,7 +332,7 @@ test('R-01: when even the effective limit is exceeded, the event wins and its ow
   assertCompensationAccounting(detailed)
 })
 
-test('R-01: headroom renders every compensation; past the effective limit only the oversized event compensation is deferred', () => {
+test('headroom renders every compensation; past the effective limit only the oversized event compensation is deferred', () => {
   const small = { id: 'small-w', intervalMs: 60_000, message: 'small event' }
   const compensations = [
     { id: 'big-w', count: 2, firstFailAt: NOW - 2 * 3_600_000, error: 'gateway/internal error '.repeat(8) },
@@ -379,4 +379,48 @@ test('R-01: headroom renders every compensation; past the effective limit only t
   assert.deepEqual(over.deferredCompensationIds, ['big-w'])
   assertCompensationAccounting(over)
   assert.equal(renderMergedMessage({ items: [small, { id: 'big-w', intervalMs: 60_000, message: 'y'.repeat(12_000) }], compensations, now: NOW, maxBytes: 8192 }), over.text, 'string renderer stays compatible')
+})
+
+test('boundary: maxItems=1; invalid maxItems/maxBytes clamp predictably for direct renderer calls', () => {
+  const items = [item({ id: 'a', message: 'first' }), item({ id: 'b', message: 'second' })]
+  const one = renderMergedMessageDetailed({ items, now: NOW, maxItems: 1 })
+  assert.deepEqual(one.includedIds, ['a'], 'exactly one event is rendered')
+  assert.equal(one.truncated, true)
+  assert.match(one.text, /^\[WATCH 通知\] 2 个事件/)
+  assert.match(one.text, /…另有 1 个事件未列出/)
+
+  // Config 保证 maxItems>=1、maxBytes>=8192；以下只覆盖直接调用渲染器的边界：
+  // 0/负数夹到最小 1 项，NaN/null/缺省回退默认 20 项。
+  assert.deepEqual(renderMergedMessageDetailed({ items, now: NOW, maxItems: 0 }).includedIds, ['a'], 'maxItems=0 clamps to 1, not silently to 20')
+  assert.deepEqual(renderMergedMessageDetailed({ items, now: NOW, maxItems: -5 }).includedIds, ['a'])
+  assert.deepEqual(renderMergedMessageDetailed({ items, now: NOW, maxItems: Number.NaN }).includedIds, ['a', 'b'])
+  assert.deepEqual(renderMergedMessageDetailed({ items, now: NOW, maxItems: 7.9 }).includedIds, ['a', 'b'])
+
+  const big = item({ id: 'big', message: 'x'.repeat(6_000) })
+  assert.deepEqual(
+    renderMergedMessageDetailed({ items: [big], now: NOW, maxBytes: 0 }).includedIds,
+    [],
+    'maxBytes=0 clamps to the 1024 floor instead of falling back to 16KB',
+  )
+  assert.deepEqual(renderMergedMessageDetailed({ items: [big], now: NOW, maxBytes: -1 }).includedIds, [])
+  assert.deepEqual(renderMergedMessageDetailed({ items: [big], now: NOW, maxBytes: Number.NaN }).includedIds, ['big'], 'invalid maxBytes falls back to the default')
+  assert.deepEqual(renderMergedMessageDetailed({ items: [big], now: NOW, maxBytes: null }).includedIds, ['big'], 'null means "not configured"')
+})
+
+test('compensation error clipping never splits a UTF-16 surrogate pair', () => {
+  // 第 128 个码点恰好是代理对（emoji）：旧实现按 UTF-16 码元 slice 会留下孤立高代理字符，
+  // 宿主编码后变成 U+FFFD。修复后按码点截断，emoji 保持完整。
+  const error = `${'x'.repeat(127)}😀tail`
+  const message = renderMergedMessage({ items: [item()], compensations: [compensate({ error })], now: NOW })
+  assert.equal(message.isWellFormed(), true, 'no lone surrogate in the rendered message')
+  assert.ok(message.includes(`${'x'.repeat(127)}😀…`), 'the emoji at the clip boundary is kept intact')
+
+  // BMP 文本的截断语义不变：仍是前 128 个字符 + 省略号。
+  const ascii = renderMergedMessage({
+    items: [item({ error: null })],
+    compensations: [compensate({ error: 'y'.repeat(300) })],
+    now: NOW,
+  })
+  assert.ok(ascii.includes(`${'y'.repeat(128)}…`))
+  assert.ok(!ascii.includes('y'.repeat(129)))
 })

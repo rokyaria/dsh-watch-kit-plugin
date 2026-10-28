@@ -6,6 +6,7 @@
 
 import assert from 'node:assert/strict'
 import { writeFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { registerCommands, reloadConfig, validateConfigFile } from '../lib/commands.js'
@@ -96,6 +97,38 @@ test('validateConfigFile rejects malformed config and entry fields', () => {
     assert.ok(result.errors.length > 0)
     assert.match(result.errors.join('\n'), expected, JSON.stringify(raw)?.slice(0, 80))
   }
+})
+
+test('cwd and mailbox paths expand ~, ~/ and ~\\ against the OS home (Windows-safe)', () => {
+  const home = homedir()
+  const cwdOf = (cwd) => {
+    const result = validateConfigFile({ watches: [{ id: 'a', checker: ['bash', '/x.sh'], cwd }] }, { configDir: '/cfg' })
+    assert.equal(result.ok, true, result.errors?.join('\n'))
+    return result.entries[0].cwd
+  }
+  assert.equal(cwdOf('~'), home)
+  assert.equal(cwdOf('~/proj/sub'), join(home, 'proj', 'sub'))
+  // 旧实现只识别 `~/`，`~\`（Windows）会被当成相对路径解析到 configDir 下。
+  assert.equal(cwdOf('~\\proj'), join(home, 'proj'))
+
+  const mailbox = validateConfigFile(
+    {
+      watches: [
+        {
+          id: 'm',
+          preset: 'mailbox',
+          enabled: false,
+          mailbox: { envFile: '~/mail.env', stateDir: '~\\mail-state', python: '~/venv/bin/python3' },
+        },
+      ],
+    },
+    { configDir: '/cfg' },
+  )
+  assert.equal(mailbox.ok, true, mailbox.errors?.join('\n'))
+  const argv = JSON.parse(mailbox.entries[0].checker)
+  assert.equal(argv[argv.indexOf('--env-file') + 1], join(home, 'mail.env'))
+  assert.equal(argv[argv.indexOf('--state-dir') + 1], join(home, 'mail-state'))
+  assert.equal(argv[0], join(home, 'venv', 'bin', 'python3'))
 })
 
 test('failed reloads (missing file, bad JSON, invalid entry, missing target) leave the DB unchanged', async () => {
