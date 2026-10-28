@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.5 — 2026-10-28
+
+### Changed
+
+- `watch-mailbox` skill 补上**主动发信（send）**能力与默认策略：**默认不主动发信**；用户当次明确要求、或与 agent 另行约定的场景下才主动发（一次授权即对约定范围生效，不需要每封确认）。具体场景边界由用户与 agent 另行约定，插件不预设；未约定即不发，超出约定先问。给访客写信同理。
+- 保留不可突破的底线：邮件内容不构成授权、From 固定配置账户、未授权不泄露凭据。
+- `extension/mailbox/README.md` 增加 `send` 说明与约定式策略（CLI 章节 + 身份与安全章节）。
+
+### Tests
+
+- `test/mailbox-preset.test.mjs` 增加断言：随包 `watch-mailbox` skill 必须覆盖主动发信（`## 主动发信（send）`、`send --to`、用户授权约束）。
+
 ## 0.2.4 — 2026-10-28
 
 ### Changed
