@@ -57,7 +57,7 @@ python3 mail.py allow --remove-allow-account guest@example.com --env-file ... --
 
 ## 3. 配置 watch
 
-把 `watches.example.json` 中的 entry 合并进工作区的 `<workspace>/.dsh/watch/watches.json`，把路径改成实际值，并删除/改为 `"enabled": true`。**不要改 checker 路径或参数**：`preset: "mailbox"` 会由插件自动映射到随包脚本。
+把 `watches.example.json` 中的 entry 合并进 `$DSH_HOME` 下的 `<dshHome>/watch/watches.json`，把路径改成实际值，并删除/改为 `"enabled": true`。**不要改 checker 路径或参数**：`preset: "mailbox"` 会由插件自动映射到随包脚本。
 
 ```json
 {
@@ -155,7 +155,12 @@ temp -> acked（reply 成功，或显式 mark）
 
 ## 7. 严格策略与 skill
 
-随包 `extension/mailbox/skills/watch-mailbox/SKILL.md` 包含默认严格行为；如果用户想放宽（例如 guest 可带附件），把该文件复制到项目级 `.dsh/skills/watch-mailbox/SKILL.md` 并修改。项目级同名 skill 优先。
+随包 `extension/mailbox/skills/watch-mailbox/SKILL.md` 包含默认严格行为。该 skill **不在插件运行时注册**，而是由 `/watch-reload` 落地成 `<dshHome>/skills/watch-mailbox/SKILL.md`（配置里存在 `enabled: true` 的 `preset: "mailbox"` 时）：
+
+- **想放宽**（例如 guest 可带附件）：直接编辑 `<dshHome>/skills/watch-mailbox/SKILL.md`；插件不覆盖已存在的文件，`/watch-reload` 会保留你的修改；
+- **停用 mailbox**：该目录整体移入 `<dshHome>/watch/extension/skills/watch-mailbox/`（单份，覆盖旧归档，不保留多份历史）；
+- **重新启用**：自动从归档恢复，你的修改会回来；
+- **随包 skill 更新**：见[根 CHANGELOG](../../CHANGELOG.md)，插件不会覆盖你的文件；需要时自行比对后替换（或删掉目标文件再 `/watch-reload` 重新生成）。
 
 ## 8. 故障排查
 

@@ -39,13 +39,13 @@
    - id: watch
      config:
        pollIntervalMs: 10000
-       configFile: /absolute/path/to/watches.json   # 省略 → <workspace>/.dsh/watch/watches.json
-       dbFile: /absolute/path/to/watch.db           # 省略 → <workspace>/.dsh/watch/watch.db
+       configFile: /absolute/path/to/watches.json   # 省略 → <dshHome>/watch/watches.json
+       dbFile: /absolute/path/to/watch.db           # 省略 → <dshHome>/watch/watch.db
    ```
 
    `pollIntervalMs`/`configFile`/`dbFile` 三个键都可省略；`limits` 也可省略（见下方“运行上限”）。patch 会整体替换该行 config，保存后按 profile 是否启用热加载决定是否重启 DSH。只想快速用起来的用户/agent 可以跳过本步。
 
-   `<workspace>` 默认取**最近一个可见会话的 cwd**（`ctx.sessionController.list`；DSH 的 `workingDirectory.defaultDirectory` 在桌面版通常是 profile 目录，不作为首选），都取不到时用 `process.cwd()`。默认路径：`<workspace>/.dsh/watch/watches.json` 与 `<workspace>/.dsh/watch/watch.db`；DB 父目录自动创建，配置文件不存在时 `/watch-reload` 报错。`configFile`/`dbFile` 也可写相对 `<workspace>` 的路径；**建议在 profile patch 里显式写绝对路径**，避免启动方式不同导致默认目录漂移。
+   路径默认在**用户级 `$DSH_HOME`**（默认 `~/.dsh`）下：`<dshHome>/watch/watches.json` 与 `<dshHome>/watch/watch.db`（与 profile 级安装形态一致，不依赖会话 cwd）。`configFile`/`dbFile` 可显式写绝对路径（推荐），相对路径按 `$DSH_HOME` 解析；DB 父目录自动创建，配置文件不存在时 `/watch-reload` 报错。
 
 ### 运行上限（可选）
 
@@ -73,7 +73,7 @@
 
 ## 快速开始
 
-1. 新建 `watches.json`（可直接用默认路径 `<workspace>/.dsh/watch/watches.json`）：
+1. 新建 `watches.json`（可直接用默认路径 `<dshHome>/watch/watches.json`）：
 
    ```json
    {
@@ -115,7 +115,11 @@
 }
 ```
 
-默认所有人都不通知，必须用 per-account allowlist 显式允许；不能把授权码写进 `watches.json`。完整说明、模板和严格行为见 [extension/mailbox/README.md](https://github.com/rokyaria/dsh-watch-kit-plugin/blob/main/extension/mailbox/README.md)。插件还会随包注册 `watch-kit` / `watch-mailbox` 两个运行时 skill。
+默认所有人都不通知，必须用 per-account allowlist 显式允许；不能把授权码写进 `watches.json`。完整说明、模板和严格行为见 [extension/mailbox/README.md](https://github.com/rokyaria/dsh-watch-kit-plugin/blob/main/extension/mailbox/README.md)。
+
+`watch-kit` skill 由插件运行时注册；`watch-mailbox` **不常驻注册**——当配置里存在 `enabled: true` 的 `preset: "mailbox"` watch 时，`/watch-reload` 会把它落地成 `<dshHome>/skills/watch-mailbox/SKILL.md`（可直接编辑，插件不覆盖）；停用时整目录移入 `<dshHome>/watch/extension/skills/watch-mailbox/`（单份，覆盖旧归档），重新启用自动恢复。随包内容更新见 CHANGELOG，需自行比对决定是否替换。
+
+该 skill 与 `watches.json` / `watch.db` 同口径，都在**用户级 `$DSH_HOME`** 下（默认 `~/.dsh`），不跟随工作区。从 0.2.3 升级后请先发一次 `/watch-reload` 让 skill 落地。
 
 ## 配置文件：watches.json
 

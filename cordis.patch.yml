@@ -1,6 +1,7 @@
 # dsh-watch-kit-plugin —— profile bundle layer
 #
-# 安装后默认：10s 轮询，配置文件 <workspace>/.dsh/watch/watches.json，DB <workspace>/.dsh/watch/watch.db。
+# 安装后默认：10s 轮询，运行时状态在用户级 <dshHome>（默认 ~/.dsh）下：
+#   配置 <dshHome>/watch/watches.json，DB <dshHome>/watch/watch.db。
 # 在 profile 的 cordis.patch.yml 里覆盖 watch 行 config（不要用 insert：bundle 已插入该行）：
 #
 #   - id: watch

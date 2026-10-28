@@ -44,10 +44,11 @@ runs 记账：delivered / last_notify_at / 投递失败补偿
 | `lib/poller.js` | 轮询、并发、投递、失败补偿、清理、stop/dispose |
 | `lib/commands.js` | `/watch-reload`：配置校验、事务同步、target 绑定 |
 | `lib/tools.js` | `watch_runs`、`watch_sessions` 两个模型工具 |
-| `lib/skills.js` | 注册随包运行时 skill：`watch-kit`、`watch-mailbox` |
+| `lib/skills.js` | 注册运行时 skill `watch-kit` |
+| `lib/mailbox-skill.js` | mailbox skill 落地/归档：`/watch-reload` 后同步 `<dshHome>/skills/watch-mailbox/` ↔ `<dshHome>/watch/extension/skills/watch-mailbox/` |
 | `extension/mailbox/` | 随包 mailbox checker/CLI、模板与 skill（Python 3.10+，仅标准库） |
 
-依赖注入：`inject = ['commands','tools','skills','sessionController','subprocess','timer','workingDirectory']`。`skills` 用于注册 `watch-kit` / `watch-mailbox`；扩展代码/模板在 `extension/`。
+依赖注入：`inject = ['commands','tools','skills','sessionController','subprocess','timer']`。`skills` 用于注册 `watch-kit`；mailbox skill 由文件落地（`lib/mailbox-skill.js`），扩展代码/模板在 `extension/`。
 
 `limits` 是插件级运行上限，通过 apply 注入 Poller/checker/render/cleanup：`checker.maxStdoutBytes`、`maxStderrBytes`、`maxMessageBytes`、`maxErrorBytes`；`message.maxItems`、`maxBytes`；`scheduler.maxConcurrentChecks`、`runRetentionDays`。默认值等于原常量，所有值都有上下限护栏。
 
@@ -139,11 +140,10 @@ CREATE TABLE runs (
 
 `apply(ctx, config)` 是 **async** 的：
 
-1. 决定 workspace：如果 `configFile` 和 `dbFile` 都显式给了，直接用；否则尝试从 `ctx.sessionController.list` 找最近一个可见会话的 `cwd`，取不到再用 `ctx.workingDirectory.defaultDirectory`，最后退回 `process.cwd()`。
-2. 解析并 trim `configFile` / `dbFile`；相对路径按 workspace 解析；默认 `<workspace>/.dsh/watch/watches.json` 与 `<workspace>/.dsh/watch/watch.db`。
-3. `mkdir -p` 父目录，打开 `WatchDB`，装配 `Poller`。
-4. 注册 `/watch-reload`、`watch_runs`、`watch_sessions`，安装 interval effect；安装后立即 poll 一次。
-5. 注册阶段任何异常 → 关闭已打开的 DB/poller 后再抛出，避免泄漏。
+1. 解析 `configFile` / `dbFile`：显式绝对路径直接用；相对路径按 `$DSH_HOME` 解析；默认 `<dshHome>/watch/watches.json` 与 `<dshHome>/watch/watch.db`（`<dshHome>` = `DSH_HOME` 或 `~/.dsh`；v0.2.4 起不再读会话 cwd/workingDirectory）。
+2. `mkdir -p` 父目录，打开 `WatchDB`，装配 `Poller`。
+3. 注册 `/watch-reload`、`watch_runs`、`watch_sessions`，安装 interval effect；安装后立即 poll 一次。
+4. 注册阶段任何异常 → 关闭已打开的 DB/poller 后再抛出，避免泄漏。
 
 `Poller`：
 
@@ -211,7 +211,7 @@ JSON 字段：
 - **`defineTool`**：`output: { schema: { type: 'json' }, render }` 是合法形状；`parameters` 必填；默认值要在 `execute` 里实现。
 - **`ctx.commands.register`**：命令名需匹配 `/^[a-z][a-z0-9_-]*$/`，`description` 非空，handler 返回 `{kind:'success'|'error', text}`；invocation 里有 `agent` / `signal`。
 - **`ctx.sessionController.list`**：`list(request, signal)`，返回 `{items: SessionSummary[]}`；`signal` 在类型上是必须的；visible 不等于 unarchived。
-- **`ctx.workingDirectory.defaultDirectory`**：存在且是绝对路径，但它是部署 fallback，桌面版通常等于 host 进程 cwd（可能是 profile 目录），**不能直接当作“用户的 workspace”**；默认路径应优先从最近会话 cwd 解析，或让用户显式配置。
+- **`$DSH_HOME`**：v0.2.4 起运行时状态默认放 `$DSH_HOME/watch/`，不再解析 workspace/workingDirectory（桌面版的 `workingDirectory.defaultDirectory` 通常是 profile 目录，不可靠）。
 - **打包**：只把 `@deepseek-ai/dsh-llm`、`@deepseek-ai/dsh-tools`、`@deepseek-ai/schemastery` 放在 `peerDependencies`（不要放 `dependencies`），配合 `engines.dsh`；DSH 的 linked-root 路由会从安装副本解析 peer，fresh clone 无 `node_modules` 也能加载。本地开发需要 `devDependencies` + `pnpm install`。
 
 已知平台/运行时限制：
@@ -231,7 +231,7 @@ node --test test/*.test.mjs
 ```
 
 - Node：9 个测试文件、72 个测试（新增 `mailbox-preset` 5 个）；Python：`python3 -m unittest discover -s test/python -v`，15 个 fake IMAP/SMTP 测试（也可 `pnpm test:mailbox`）。
-- 使用真实临时 `node:sqlite` DB + fake host（commands/tools/sessionController/subprocess/timer/workingDirectory/logger），不依赖网络或真实会话。
+- 使用真实临时 `node:sqlite` DB + fake host（commands/tools/skills/sessionController/subprocess/timer/logger），不依赖网络或真实会话；涉及 `/watch-reload` 的测试把 `DSH_HOME` 指向临时目录。
 - 覆盖重点：schema/claim 事务/多连接不重复 claim、软删除/复活、JSON 契约/失败分类/字节上限、合并消息/补偿/128 字符/10 行、超限截断记账、单条失败错误隔离、reload 原子性/target 绑定、watch_runs 窗口/聚合、watch_sessions signal/排序/50 条、async apply/默认路径/dispose、真实 DB 端到端。
 - 修改行为时先加/改测试；测试不应弱化“只标记实际投递的 watch”“失败不重试”等不变量。
 - 随包 mailbox 的状态机/allowlist/身份/回复测试在 `test/python/`，运行需要 Python 3.10+，不依赖第三方库。
@@ -278,13 +278,13 @@ v0.1 → v0.2.1 是破坏性重写：旧管理命令、watch 目录、校验流�
 - 状态机：`temp` → 超时提醒并重置 → `acked`；reply 成功自动标记。
 - 多账户靠多个 watch entry 实现，复用现有 poller/合并/隔离，不是单 checker 轮询多邮箱。
 - `mail.py` 需要本机 Python 3.10+；插件本体不用 mailbox 时不需要 Python。
-- 随包 skill：`watch-kit` 提醒 agent 读 README；`watch-mailbox` 提供 read/reply/mark、身份/附件严格策略。两个 `SKILL.md` 带标准 `name`/`description` frontmatter，可直接复制到项目 `.dsh/skills/`；运行时注册会剥离 frontmatter。`whenToUse` 虽被解析，但默认模型侧目录不渲染它，不作为触发条件；自动发现依赖 `description`，触发词应写在那里。项目级同名 skill 可覆盖。
+- 随包 skill：`watch-kit` 由运行时注册（提醒 agent 读 README）；`watch-mailbox` 不常驻注册，由 `/watch-reload` 落地到 `<dshHome>/skills/watch-mailbox/SKILL.md`（存在 enabled 的 mailbox watch 时），停用移入 `<dshHome>/watch/extension/skills/watch-mailbox/`（单份，覆盖旧归档），重新启用恢复；插件不覆盖用户修改。两个 `SKILL.md` 带标准 `name`/`description` frontmatter；自动发现依赖 `description`，触发词写在那里。
 
 ## 13. 已知取舍与后续方向
 
 1. **渲染预算保守**：为补偿段固定预留 4KB，极端情况下可能丢掉一条本可放进 16KB 的事件；丢弃提示在空间不足时可能不出现。
 2. **未来 schema 的 DB**：`user_version > 1` 会拒绝，但打开时可能已经执行 WAL/建表语句；正常版本（0/1）不受影响。
-3. **默认 workspace 启发式**：最近可见会话 cwd；多 workspace/不同启动方式下建议显式写绝对 `configFile`/`dbFile`。
+3. **用户级状态**：默认所有 watch 共用 `$DSH_HOME/watch/`；需要按项目隔离时显式写 `configFile`/`dbFile`。旧版工作区 `.dsh/watch/` 不自动迁移（见 CHANGELOG 0.2.4）。
 4. **归档会话不可见**：DSH 不暴露 archived 字段，`watch_sessions` 可能列出归档会话；需要用户自行确认。
 5. **无自动去重/重试**：checker 要自己维护状态；投递失败只做一次性补偿。
 6. **同步 SQLite**：极端写竞争下 `busy_timeout=5000` 可能让 host 事件循环阻塞至多 5s。

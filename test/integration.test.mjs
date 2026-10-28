@@ -6,6 +6,8 @@
  */
 
 import assert from 'node:assert/strict'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { apply } from '../lib/index.js'
@@ -14,6 +16,13 @@ import {
 } from './helpers/harness.mjs'
 
 const MINUTE = 60_000
+
+// /watch-reload 会同步 mailbox skill 到用户级 $DSH_HOME，测试时隔离到临时目录。
+const TEST_DSH_HOME = mkdtempSync(join(tmpdir(), 'watch-integration-dsh-'))
+process.env.DSH_HOME = TEST_DSH_HOME
+test.after(async () => {
+  await cleanup(TEST_DSH_HOME)
+})
 
 const paths = (workspace) => ({
   configFile: join(workspace, '.dsh', 'watch', 'watches.json'),

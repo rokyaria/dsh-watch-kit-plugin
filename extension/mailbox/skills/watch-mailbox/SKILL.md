@@ -45,4 +45,4 @@ python3 <脚本> list   --pending --env-file <env> --state-dir <state> --allow-a
 
 ## 放宽行为
 
-这是随包默认的严格 skill。用户想放宽时，把本文件复制到项目级 `.dsh/skills/watch-mailbox/SKILL.md` 并修改（项目级同名 skill 优先于运行时注册的版本），然后重启/重新加载 skill 目录。本文件自带 `name`/`description` frontmatter，可直接被 skill 目录发现。
+这是随包默认的严格 skill。用户想放宽（例如 guest 可带附件）时，直接编辑 `<dshHome>/skills/watch-mailbox/SKILL.md`：该文件由 `/watch-reload` 落地，插件不会覆盖已存在的文件，你的修改会保留。停用 mailbox 时目录会被移入 `<dshHome>/watch/extension/skills/watch-mailbox/`，重新启用时自动恢复。随包内容更新见插件的 `CHANGELOG.md`，需要时自行比对决定是否替换。

@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.2.4 — 2026-10-28
+
+### Changed
+
+- **mailbox skill 改为文件落地**：不再在插件加载时调用 `ctx.skills.register` 注册 `watch-mailbox`（运行时条目优先级高于用户 skill 目录，会遮蔽用户修改）。现在由 `/watch-reload` 成功后按配置同步文件：
+  - 存在 `enabled: true` 的 `preset: "mailbox"` watch → 写入 `<dshHome>/skills/watch-mailbox/SKILL.md`；目标已存在则**保留不覆盖**（用户可直接编辑）。
+  - 无 enabled mailbox watch → 该目录整体移入 `<dshHome>/watch/extension/skills/watch-mailbox/`（同一 skill 只保留一份归档，覆盖旧归档），目标目录消失。
+  - 重新启用时若目标不存在、归档存在 → 自动从归档恢复（保留用户修改）。
+- `/watch-reload` 成功输出新增 `mailbox skill:` 状态行（materialized / restored / kept / archived）。
+- `lib/skills.js` 只注册 `watch-kit`；新增 `lib/mailbox-skill.js`（落地/归档，不做哈希校验、不保留多份历史）。
+- **运行时状态改为用户级**：`watches.json` / `watch.db` 默认在 `<dshHome>/watch/`（默认 `~/.dsh/watch/`），与 profile 级安装形态一致；不再依赖“最近会话 cwd”猜 workspace，也不再写工作区 `.dsh`。mailbox skill 落地 `<dshHome>/skills/watch-mailbox/`，归档 `<dshHome>/watch/extension/skills/watch-mailbox/`。
+- 随包 skill 内容更新不再自动覆盖用户文件，变更以 CHANGELOG 说明，由用户自行比对替换。
+- 升级提示：从 0.2.3 升级后 `watch-mailbox` 不再运行时注册，请在配置就绪后发送一次 `/watch-reload` 让 skill 文件落地；旧版 `<workspace>/.dsh/watch/` 下的 watches.json/watch.db 不会自动迁移——需要保留的话复制到 `~/.dsh/watch/`（或在 profile patch 里显式指向旧路径），再 `/watch-reload`。
+
+### Docs
+
+- README / `extension/mailbox/README.md` / `watch-mailbox/SKILL.md` 更新"放宽行为"与归档说明。
+- `docs/development.md` 模块表与 skill 说明同步。
+- `skills/watch-kit/SKILL.md` 更新到 v0.2.4 对外表面：用户级状态路径、mailbox skill 落地/归档、状态位置速查。
+
+### Tests
+
+- 新增 `test/mailbox-skill.test.mjs`（9 例：materialized / kept / restored / archived / 单份归档 / absent / 路径布局/workspace 必填 / reload 端到端）；`test/apply.test.mjs` 断言运行时只注册 `watch-kit`。测试 72 → 81。
+
 ## 0.2.3 — 2026-10-28
 
 ### Added
@@ -63,7 +87,7 @@
 
 ### Changed
 
-- 插件 Config 收敛为 3 项：`pollIntervalMs`、`configFile`、`dbFile`；默认路径 `<workspace>/.dsh/watch/`。
+- 插件 Config 收敛为 3 项：`pollIntervalMs`、`configFile`、`dbFile`；默认路径 `<dshHome>/watch/`。
 - 版本 0.2.1；`engines.dsh = ^0.2.1-rc.3`；peerDependencies 为 `@deepseek-ai/dsh-llm`、`@deepseek-ai/dsh-tools`、`@deepseek-ai/schemastery`。
 - 包内文件仅保留 `lib/`、`locale/`、`icon.svg`、`cordis.patch.yml`、CHANGELOG、README（加上自动打包的 LICENSE）。
 

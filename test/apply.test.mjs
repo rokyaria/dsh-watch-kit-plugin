@@ -1,8 +1,8 @@
 /**
- * Assembly contract (contract §1/§7): Config schema, async apply with workspace
- * resolution (recent session cwd → workingDirectory → process.cwd; explicit
- * configFile+dbFile bypass), command/tool registration, immediate + interval
- * polling, and dispose (clear interval, stop poller, unregister command/tools).
+ * Assembly contract (contract §1/§7): Config schema, async apply with $DSH_HOME
+ * default paths (no workspace heuristics since v0.2.4), command/tool registration,
+ * immediate + interval polling, and dispose (clear interval, stop poller,
+ * unregister command/tools).
  */
 
 import assert from 'node:assert/strict'
@@ -11,7 +11,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { apply, Config, inject, name } from '../lib/index.js'
 import { WatchDB } from '../lib/db.js'
-import { cleanup, makeFakeSubprocess, makeHostCtx, makeSession, makeTmp, rawRun, waitFor, watchEntry } from './helpers/harness.mjs'
+import { cleanup, makeFakeSubprocess, makeHostCtx, makeTmp, rawRun, waitFor, watchEntry } from './helpers/harness.mjs'
 
 const DEFAULT_POLL_MS = 10_000
 const DEFAULT_LIMITS = {
@@ -21,14 +21,24 @@ const DEFAULT_LIMITS = {
 }
 const exists = (file) => stat(file).then(() => true, () => false)
 
-async function withWorkspace(fn) {
-  const dir = await makeTmp()
+/** 每个用例用独立的 DSH_HOME，避免默认路径互相污染（apply 从 env 读）。 */
+async function withDshHome(fn) {
+  const home = await makeTmp()
+  const previous = process.env.DSH_HOME
+  process.env.DSH_HOME = home
   try {
-    return await fn(dir)
+    return await fn(home)
   } finally {
-    await cleanup(dir)
+    if (previous === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previous
+    await cleanup(home)
   }
 }
+
+const defaultPaths = (home) => ({
+  configFile: join(home, 'watch', 'watches.json'),
+  dbFile: join(home, 'watch', 'watch.db'),
+})
 
 function seedDueWatch(dbFile, id = 'a') {
   const db = new WatchDB(dbFile)
@@ -43,7 +53,7 @@ const logText = (host) => host.logger.lines.map((line) => line.message).join('\n
 
 test('exports the plugin name, inject list and Config defaults', () => {
   assert.equal(name, 'watch')
-  assert.deepEqual(inject, ['commands', 'tools', 'skills', 'sessionController', 'subprocess', 'timer', 'workingDirectory'])
+  assert.deepEqual(inject, ['commands', 'tools', 'skills', 'sessionController', 'subprocess', 'timer'])
   assert.deepEqual(Config({}), { pollIntervalMs: DEFAULT_POLL_MS, configFile: '', dbFile: '', limits: DEFAULT_LIMITS })
   assert.throws(() => Config({ pollIntervalMs: 999 }), /pollIntervalMs/)
   assert.equal(Config({ limits: { checker: { maxStdoutBytes: 8192 } } }).limits.checker.maxStdoutBytes, 8192)
@@ -52,49 +62,42 @@ test('exports the plugin name, inject list and Config defaults', () => {
   assert.throws(() => Config({ limits: { scheduler: { runRetentionDays: 0 } } }), /runRetentionDays/)
 })
 
-test('apply resolves the default workspace from the most recent visible session cwd', async () => {
-  await withWorkspace(async (workspace) => {
-    const host = makeHostCtx({
-      workspace: join(workspace, 'fallback'),
-      session: makeSession({ sessions: [{ sessionId: 'recent', cwd: workspace, updatedAt: 10, blank: false }] }),
-      subprocess: makeFakeSubprocess([{ stdout: '{"notify":false}' }]),
-    })
-    seedDueWatch(join(workspace, '.dsh', 'watch', 'watch.db'))
+test('apply uses <DSH_HOME>/watch defaults and never queries sessions', async () => {
+  await withDshHome(async (home) => {
+    const { configFile, dbFile } = defaultPaths(home)
+    seedDueWatch(dbFile)
+    const host = makeHostCtx({ subprocess: makeFakeSubprocess([{ stdout: '{"notify":false}' }]) })
     const pending = apply(host.ctx, {})
     assert.ok(pending instanceof Promise, 'apply is async')
     await pending
     try {
-      assert.equal(host.session.lists.length, 1, 'session list is used to resolve the workspace')
-      assert.deepEqual(host.session.lists[0].params, {})
-      assert.ok(host.session.lists[0].signal instanceof AbortSignal)
+      assert.equal(host.session.lists.length, 0, 'defaults no longer depend on session cwd')
       assert.deepEqual(host.state.commands.map((command) => command.name), ['watch-reload'])
       assert.deepEqual(host.state.tools.map((tool) => tool.name), ['watch_runs', 'watch_sessions'])
-      assert.deepEqual(host.state.skills.map((skill) => skill.name), ['watch-kit', 'watch-mailbox'])
+      // v0.2.4：mailbox skill 不再运行时注册，改为 /watch-reload 落地到 <dshHome>/skills
+      assert.deepEqual(host.state.skills.map((skill) => skill.name), ['watch-kit'])
       assert.ok(host.state.skills[0].content.includes('README.md'))
-      assert.ok(host.state.skills[1].content.includes('mail.py'))
       assert.ok(host.state.skills[0].content.includes('不要凭空发明命令'))
       assert.ok(host.state.skills.every((skill) => !skill.content.includes('{{')))
       assert.ok(host.state.skills.every((skill) => !skill.content.startsWith('---')))
-      assert.match(host.state.skills[1].description, /\[MAILBOX\] 通知/)
-      assert.match(host.state.skills[1].description, /查看\/回复邮箱/)
       assert.equal(host.state.intervals.length, 1)
       assert.equal(host.state.intervals[0].ms, DEFAULT_POLL_MS)
       await waitFor(() => host.subprocess.spawns.length === 1, { timeout: 2_000 })
-      assert.equal(await exists(join(workspace, '.dsh', 'watch', 'watch.db')), true)
-      assert.match(logText(host), /db=.*\.dsh\/watch\/watch\.db/)
-      assert.ok(logText(host).includes(join(workspace, '.dsh', 'watch', 'watches.json')))
+      assert.equal(await exists(dbFile), true)
+      assert.ok(logText(host).includes(`db=${dbFile}`))
+      assert.ok(logText(host).includes(configFile))
     } finally {
       host.disposeAll()
     }
   })
 })
 
-
 test('apply forwards configurable checker limits to the spawned checker', async () => {
-  await withWorkspace(async (workspace) => {
+  await withDshHome(async (home) => {
+    const { dbFile } = defaultPaths(home)
+    seedDueWatch(dbFile)
     const subprocess = makeFakeSubprocess([{ stdout: '{"notify":false}' }])
-    const host = makeHostCtx({ workspace, subprocess })
-    seedDueWatch(join(workspace, '.dsh', 'watch', 'watch.db'))
+    const host = makeHostCtx({ subprocess })
     await apply(host.ctx, { limits: { checker: { maxStdoutBytes: 8192, maxStderrBytes: 1024 } } })
     try {
       await waitFor(() => subprocess.spawns.length === 1, { timeout: 2_000 })
@@ -106,17 +109,17 @@ test('apply forwards configurable checker limits to the spawned checker', async 
   })
 })
 
-test('apply honors explicit pollIntervalMs/configFile/dbFile and bypasses the session lookup', async () => {
-  await withWorkspace(async (workspace) => {
-    const dbFile = join(workspace, 'custom', 'state.db')
-    const host = makeHostCtx({ workspace, subprocess: makeFakeSubprocess([]) })
+test('explicit pollIntervalMs/configFile/dbFile win; relative paths resolve against <DSH_HOME>', async () => {
+  await withDshHome(async (home) => {
+    const dbFile = join(home, 'custom', 'state.db')
+    const host = makeHostCtx({ subprocess: makeFakeSubprocess([]) })
     await apply(host.ctx, { pollIntervalMs: 2_500, configFile: 'cfg/watches.json', dbFile })
     try {
-      assert.equal(host.session.lists.length, 0, 'explicit config+db paths skip the session list')
+      assert.equal(host.session.lists.length, 0)
       assert.equal(host.state.intervals[0].ms, 2_500)
-      assert.equal(await exists(join(workspace, 'cfg')), true, 'config dir is created')
+      assert.equal(await exists(join(home, 'cfg')), true, 'relative config path resolves against DSH_HOME')
       assert.equal(await exists(dbFile), true, 'custom DB file is created')
-      assert.ok(logText(host).includes(join(workspace, 'cfg', 'watches.json')))
+      assert.ok(logText(host).includes(join(home, 'cfg', 'watches.json')))
     } finally {
       host.disposeAll()
     }
@@ -124,12 +127,12 @@ test('apply honors explicit pollIntervalMs/configFile/dbFile and bypasses the se
 })
 
 test('the registered interval callback polls due watches', async () => {
-  await withWorkspace(async (workspace) => {
-    const dbFile = join(workspace, '.dsh', 'watch', 'watch.db')
+  await withDshHome(async (home) => {
+    const { dbFile } = defaultPaths(home)
     seedDueWatch(dbFile)
     rawRun(dbFile, 'UPDATE watches SET enabled = 0')
     const subprocess = makeFakeSubprocess([{ stdout: '{"notify":false}' }])
-    const host = makeHostCtx({ workspace, subprocess })
+    const host = makeHostCtx({ subprocess })
     await apply(host.ctx, {})
     try {
       await new Promise((resolve) => setTimeout(resolve, 10))
@@ -144,11 +147,11 @@ test('the registered interval callback polls due watches', async () => {
 })
 
 test('dispose clears the interval, stops polling and unregisters command/tools', async () => {
-  await withWorkspace(async (workspace) => {
-    const dbFile = join(workspace, '.dsh', 'watch', 'watch.db')
+  await withDshHome(async (home) => {
+    const { dbFile } = defaultPaths(home)
     seedDueWatch(dbFile)
     const subprocess = makeFakeSubprocess([{ stdout: '{"notify":false}' }])
-    const host = makeHostCtx({ workspace, subprocess })
+    const host = makeHostCtx({ subprocess })
     await apply(host.ctx, {})
     await waitFor(() => subprocess.spawns.length === 1, { timeout: 2_000 })
     const { command, tool, interval } = {
@@ -168,35 +171,14 @@ test('dispose clears the interval, stops polling and unregisters command/tools',
   })
 })
 
-test('workspace falls back to process.cwd() when session list and workingDirectory are unavailable', async () => {
-  await withWorkspace(async (workspace) => {
-    const originalCwd = process.cwd
-    process.cwd = () => workspace
-    try {
-      const host = makeHostCtx({ workspace: '/ignored' })
-      delete host.ctx.workingDirectory
-      host.session.sessionController.list = async () => ({ items: [] })
-      await apply(host.ctx, {})
-      try {
-        assert.equal(await exists(join(workspace, '.dsh', 'watch', 'watch.db')), true)
-        assert.ok(logText(host).includes(join(workspace, '.dsh', 'watch', 'watch.db')))
-      } finally {
-        host.disposeAll()
-      }
-    } finally {
-      process.cwd = originalCwd
-    }
-  })
-})
-
-test('whitespace-only config paths are treated as unset defaults', async () => {
-  await withWorkspace(async (workspace) => {
-    const host = makeHostCtx({ workspace, subprocess: makeFakeSubprocess([]) })
+test('blank config paths fall back to <DSH_HOME>/watch defaults', async () => {
+  await withDshHome(async (home) => {
+    const { configFile, dbFile } = defaultPaths(home)
+    const host = makeHostCtx({ subprocess: makeFakeSubprocess([]) })
     await apply(host.ctx, { configFile: '   ', dbFile: '  ' })
     try {
-      assert.equal(host.session.lists.length, 1, 'blank paths do not count as explicit overrides')
-      assert.equal(await exists(join(workspace, '.dsh', 'watch', 'watch.db')), true)
-      assert.ok(logText(host).includes(join(workspace, '.dsh', 'watch', 'watches.json')))
+      assert.equal(await exists(dbFile), true)
+      assert.ok(logText(host).includes(configFile))
     } finally {
       host.disposeAll()
     }
@@ -204,8 +186,8 @@ test('whitespace-only config paths are treated as unset defaults', async () => {
 })
 
 test('apply closes the poller/DB and rejects when command registration throws', async () => {
-  await withWorkspace(async (workspace) => {
-    const host = makeHostCtx({ workspace, subprocess: makeFakeSubprocess([]) })
+  await withDshHome(async () => {
+    const host = makeHostCtx({ subprocess: makeFakeSubprocess([]) })
     host.ctx.commands.register = () => { throw new Error('commands unavailable') }
     await assert.rejects(async () => apply(host.ctx, {}), /commands unavailable/)
     assert.equal(host.state.intervals.length, 0, 'no poll interval registered after the failure')
